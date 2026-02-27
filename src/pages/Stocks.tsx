@@ -1,12 +1,14 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { Download, Search, MapPin, Package, FileSpreadsheet, RefreshCw, Bell, AlertOctagon, AlertTriangle, Info, X, Clock, CheckSquare, Square, Copy, Check } from 'lucide-react';
+import { MapPin, Package, FileSpreadsheet, RefreshCw, Bell, AlertOctagon, AlertTriangle, Info, X, Clock, CheckSquare, Square, Copy, Check } from 'lucide-react';
 import { exportToExcel } from '../utils/excel';
-import { db } from '../db'; // <-- Импортируем нашу БД
-import { useLiveQuery } from 'dexie-react-hooks'; // <-- Хук для реактивности IndexedDB
+import { db } from '../db';
+import { useLiveQuery } from 'dexie-react-hooks';
+
+// ИМПОРТИРУЕМ НАШ UI KIT
+import { PageLayout, Toolbar, SearchInput, Button, TableWrapper, EmptyState } from '../components/ui';
 
 const HIDE_ALERTS_OLDER_THAN_DAYS = 30;
 
-// Оставляем localStorage только для мелких настроек (ID складов, дата)
 const loadSavedData = <T,>(key: string, defaultVal: T): T => {
   try {
     const saved = localStorage.getItem(key);
@@ -18,7 +20,6 @@ export default function Stocks() {
   const [isLoading, setIsLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState('');
   
-  // МГНОВЕННАЯ ЗАГРУЗКА ИЗ INDEXED_DB (Без зависаний интерфейса)
   const warehouses = useLiveQuery(() => db.fbsWarehouses.toArray(), []) || [];
   const stocksData = useLiveQuery(() => db.fbsStocks.toArray(), []) || [];
   const statusHistoryArray = useLiveQuery(() => db.fbsStatusHistory.toArray(), []) || [];
@@ -31,10 +32,9 @@ export default function Stocks() {
   const [isWhMenuOpen, setIsWhMenuOpen] = useState(false);
   const [selectedWhIds, setSelectedWhIds] = useState<number[]>(() => {
     const saved = loadSavedData<number[] | null>('wb_fbs_selected_whs', null);
-    return saved || []; // Инициализация
+    return saved || [];
   });
 
-  // Авто-выбор складов при первой загрузке (если в localStorage пусто)
   useEffect(() => {
     if (warehouses.length > 0 && selectedWhIds.length === 0 && !localStorage.getItem('wb_fbs_selected_whs')) {
       setSelectedWhIds(warehouses.map(w => w.id));
@@ -58,7 +58,6 @@ export default function Stocks() {
     }
   }, [selectedWhIds]);
 
-  // Преобразуем массив истории из БД в удобный объект для быстрого доступа
   const statusHistory = useMemo(() => {
     const record: Record<string, { status: string, since: number }> = {};
     statusHistoryArray.forEach(h => record[h.id] = { status: h.status, since: h.since });
@@ -201,15 +200,10 @@ export default function Stocks() {
 
       const finalStocksData = Array.from(itemGroupMap.values());
 
-      // ==========================================
-      // ТРАНЗАКЦИЯ INDEXED_DB (Атомарное сохранение)
-      // ==========================================
       await db.transaction('rw', db.fbsWarehouses, db.fbsStocks, db.fbsStatusHistory, async () => {
-        // 1. Обновляем склады
         await db.fbsWarehouses.clear();
         await db.fbsWarehouses.bulkAdd(parsedWarehouses);
 
-        // 2. Обновляем историю уведомлений (умная проверка изменений)
         const oldHistory = await db.fbsStatusHistory.toArray();
         const historyMap = new Map(oldHistory.map(h => [h.id, h]));
         const newHistoryItems: any[] = [];
@@ -230,7 +224,6 @@ export default function Stocks() {
           await db.fbsStatusHistory.bulkPut(newHistoryItems);
         }
 
-        // 3. Сохраняем новые остатки
         await db.fbsStocks.clear();
         await db.fbsStocks.bulkAdd(finalStocksData);
       });
@@ -302,20 +295,13 @@ export default function Stocks() {
   };
 
   return (
-    <div className="p-6 w-full h-full flex flex-col bg-[#F5F5F7]">
+    <PageLayout>
       
-      {/* ПАНЕЛЬ УПРАВЛЕНИЯ */}
-      <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex-shrink-0 mb-4 relative z-40">
-        
-        <div className="relative w-80">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input 
-            type="text" 
-            placeholder="Поиск по артикулу, цвету или баркоду..." 
-            value={searchQuery} 
-            onChange={(e) => setSearchQuery(e.target.value)} 
-            className="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 pl-9 pr-3 text-[13px] font-medium focus:ring-1 focus:ring-blue-500 outline-none" 
-          />
+      {/* ПАНЕЛЬ УПРАВЛЕНИЯ (ИЗ UI KIT) */}
+      <Toolbar>
+        <div className="flex items-center gap-4">
+          <h1 className="text-[16px] font-bold text-[#1e3a5f] pr-4 border-r border-gray-200 uppercase tracking-wider">Остатки (FBS)</h1>
+          <SearchInput value={searchQuery} onChange={setSearchQuery} placeholder="Поиск по артикулу, цвету или баркоду..." />
         </div>
         
         <div className="flex items-center gap-3">
@@ -347,13 +333,14 @@ export default function Stocks() {
             )}
           </div>
 
-          <button onClick={handleExport} disabled={stocksData.length === 0} className="flex items-center gap-2 px-4 py-2 bg-green-50 text-green-700 border border-green-200 rounded-lg text-[13px] font-bold hover:bg-green-100 transition-colors shadow-sm disabled:opacity-50 cursor-pointer">
-            <FileSpreadsheet size={16} /> Экспорт
-          </button>
+          <Button variant="outline" onClick={handleExport} disabled={stocksData.length === 0}>
+            <FileSpreadsheet size={16} className="text-green-600" /> Экспорт
+          </Button>
           
-          <button onClick={handleSyncStocks} disabled={isLoading} className="flex items-center gap-2 px-5 py-2 bg-blue-600 text-white rounded-lg text-[13px] font-bold hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 cursor-pointer">
-            {isLoading ? <><RefreshCw size={16} className="animate-spin" /> {syncStatus}</> : <><RefreshCw size={16} /> Обновить</>}
-          </button>
+          <Button onClick={handleSyncStocks} disabled={isLoading}>
+            <RefreshCw size={16} className={isLoading ? "animate-spin" : ""} />
+            {isLoading ? syncStatus || "Загрузка..." : "Обновить данные WB"}
+          </Button>
           
           <button onClick={() => setIsAlertsOpen(true)} className="relative flex items-center justify-center w-9 h-9 bg-white border border-gray-200 text-gray-600 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors cursor-pointer shadow-sm">
             <Bell size={18} className={alerts.length > 0 ? "animate-pulse text-blue-600" : ""} />
@@ -364,16 +351,12 @@ export default function Stocks() {
             )}
           </button>
         </div>
-      </div>
+      </Toolbar>
 
       {/* ТАБЛИЦА */}
-      <div className="bg-white border border-gray-200 rounded-xl shadow-sm flex-1 flex flex-col overflow-hidden relative">
+      <TableWrapper>
         {stocksData.length === 0 && !isLoading ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center p-12">
-            <Package size={40} className="text-gray-300 mb-4" />
-            <h3 className="text-xl font-semibold text-gray-900">Данные отсутствуют</h3>
-            <p className="text-[14px] text-gray-500 mt-1">Нажмите «Обновить», чтобы получить актуальные остатки.</p>
-          </div>
+          <EmptyState icon={Package} title="Данные отсутствуют" description="Нажмите «Обновить данные WB», чтобы получить актуальные остатки." />
         ) : (
           <div className="overflow-auto flex-1">
             <table className="w-full text-left border-collapse whitespace-nowrap">
@@ -467,12 +450,11 @@ export default function Stocks() {
                     </tr>
                   )
                 })}
-                {filteredItems.length === 0 && !isLoading && <tr><td colSpan={visibleWarehouses.length + 5} className="text-center p-12 text-gray-500 font-medium">По вашему запросу ничего не найдено.</td></tr>}
               </tbody>
             </table>
           </div>
         )}
-      </div>
+      </TableWrapper>
 
       {/* ШТОРКА УВЕДОМЛЕНИЙ */}
       {isAlertsOpen && (
@@ -493,11 +475,7 @@ export default function Stocks() {
 
             <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-gray-50/50">
               {alerts.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full text-center text-gray-500">
-                  <Package size={40} className="text-gray-300 mb-3" />
-                  <p className="font-medium text-[15px] text-gray-700">Всё отлично!</p>
-                  <p className="text-[13px] mt-1">Новых проблем с остатками не найдено.</p>
-                </div>
+                <EmptyState icon={Package} title="Всё отлично!" description="Новых проблем с остатками не найдено." />
               ) : (
                 alerts.map(a => (
                   <div key={a.id} className={`p-3 rounded-xl border bg-white shadow-sm flex gap-3 items-start transition-all hover:shadow-md ${a.type === 'critical' ? 'border-red-200' : a.type === 'warning' ? 'border-orange-200' : 'border-blue-200'}`}>
@@ -535,6 +513,6 @@ export default function Stocks() {
         </div>
       )}
 
-    </div>
+    </PageLayout>
   )
 }
