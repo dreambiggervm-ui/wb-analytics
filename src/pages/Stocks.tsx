@@ -1,23 +1,12 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { Download, Search, MapPin, Package, FileSpreadsheet, RefreshCw, Bell, AlertOctagon, AlertTriangle, Info, X, Clock, CheckSquare, Square, Copy, Check } from 'lucide-react';
 import { exportToExcel } from '../utils/excel';
-
-interface Warehouse { id: number; name: string; }
-interface StockItem {
-  id: string;
-  nmId: number;
-  vendorCode: string;
-  title: string;
-  techSize: string;
-  color: string;
-  barcodes: string[];
-  photo: string;
-  stocks: Record<number, number>;
-  totalAmount: number;
-}
+import { db } from '../db'; // <-- Импортируем нашу БД
+import { useLiveQuery } from 'dexie-react-hooks'; // <-- Хук для реактивности IndexedDB
 
 const HIDE_ALERTS_OLDER_THAN_DAYS = 30;
 
+// Оставляем localStorage только для мелких настроек (ID складов, дата)
 const loadSavedData = <T,>(key: string, defaultVal: T): T => {
   try {
     const saved = localStorage.getItem(key);
@@ -29,8 +18,11 @@ export default function Stocks() {
   const [isLoading, setIsLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState('');
   
-  const [warehouses, setWarehouses] = useState<Warehouse[]>(() => loadSavedData('wb_fbs_warehouses', []));
-  const [stocksData, setStocksData] = useState<StockItem[]>(() => loadSavedData('wb_fbs_stocks_data', []));
+  // МГНОВЕННАЯ ЗАГРУЗКА ИЗ INDEXED_DB (Без зависаний интерфейса)
+  const warehouses = useLiveQuery(() => db.fbsWarehouses.toArray(), []) || [];
+  const stocksData = useLiveQuery(() => db.fbsStocks.toArray(), []) || [];
+  const statusHistoryArray = useLiveQuery(() => db.fbsStatusHistory.toArray(), []) || [];
+  
   const [lastUpdated, setLastUpdated] = useState<string | null>(() => localStorage.getItem('wb_fbs_last_updated') || null);
   
   const [searchQuery, setSearchQuery] = useState('');
@@ -39,55 +31,39 @@ export default function Stocks() {
   const [isWhMenuOpen, setIsWhMenuOpen] = useState(false);
   const [selectedWhIds, setSelectedWhIds] = useState<number[]>(() => {
     const saved = loadSavedData<number[] | null>('wb_fbs_selected_whs', null);
-    if (saved === null) {
-      const whs = loadSavedData<Warehouse[]>('wb_fbs_warehouses', []);
-      return whs.map(w => w.id);
-    }
-    return saved;
+    return saved || []; // Инициализация
   });
+
+  // Авто-выбор складов при первой загрузке (если в localStorage пусто)
+  useEffect(() => {
+    if (warehouses.length > 0 && selectedWhIds.length === 0 && !localStorage.getItem('wb_fbs_selected_whs')) {
+      setSelectedWhIds(warehouses.map(w => w.id));
+    }
+  }, [warehouses]);
 
   const [copiedBarcode, setCopiedBarcode] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setIsWhMenuOpen(false);
-      }
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setIsWhMenuOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('wb_fbs_selected_whs', JSON.stringify(selectedWhIds));
+    if (selectedWhIds.length > 0) {
+      localStorage.setItem('wb_fbs_selected_whs', JSON.stringify(selectedWhIds));
+    }
   }, [selectedWhIds]);
 
-  const [statusHistory, setStatusHistory] = useState<Record<string, { status: string, since: number }>>(() => loadSavedData('wb_fbs_status_history', {}));
-
-  useEffect(() => {
-    if (stocksData.length === 0) return;
-    const newHistory = { ...statusHistory };
-    let isChanged = false;
-    const now = Date.now();
-
-    stocksData.forEach(item => {
-      let currentStatus = 'ok';
-      if (item.totalAmount === 0) currentStatus = 'empty';
-      else if (item.totalAmount <= 5) currentStatus = 'low';
-
-      const prev = newHistory[item.id];
-      if (!prev || prev.status !== currentStatus) {
-        newHistory[item.id] = { status: currentStatus, since: now };
-        isChanged = true;
-      }
-    });
-
-    if (isChanged) {
-      setStatusHistory(newHistory);
-      localStorage.setItem('wb_fbs_status_history', JSON.stringify(newHistory));
-    }
-  }, [stocksData]);
+  // Преобразуем массив истории из БД в удобный объект для быстрого доступа
+  const statusHistory = useMemo(() => {
+    const record: Record<string, { status: string, since: number }> = {};
+    statusHistoryArray.forEach(h => record[h.id] = { status: h.status, since: h.since });
+    return record;
+  }, [statusHistoryArray]);
 
   const alerts = useMemo(() => {
     const list: any[] = [];
@@ -133,7 +109,7 @@ export default function Stocks() {
       let updatedAt: string | undefined = undefined;
       let nmID: number | undefined = undefined;
       
-      const itemGroupMap = new Map<string, StockItem>();
+      const itemGroupMap = new Map<string, any>();
       const barcodeToGroupId = new Map<string, string>(); 
       const allSkus: string[] = [];
 
@@ -149,14 +125,12 @@ export default function Stocks() {
         const data = await res.json();
         
         for (const card of data.cards || []) {
-          // ИЗВЛЕКАЕМ ФОТО
           let photoUrl = '';
           if (card.photos && card.photos.length > 0) {
              const p = card.photos[0];
              photoUrl = p['516x688'] || p.big || p.c516x688 || p.url || (typeof p === 'string' ? p : '');
           }
 
-          // ИЗВЛЕКАЕМ ЦВЕТ (Улучшенный поиск)
           let colorStr = '';
           if (card.characteristics) {
             const colorObj = card.characteristics.find((c: any) => {
@@ -164,11 +138,8 @@ export default function Stocks() {
               return n === 'цвет' || n === 'основной цвет';
             });
             if (colorObj) {
-              if (Array.isArray(colorObj.value)) {
-                colorStr = colorObj.value.join(', ');
-              } else {
-                colorStr = String(colorObj.value || '');
-              }
+              if (Array.isArray(colorObj.value)) colorStr = colorObj.value.join(', ');
+              else colorStr = String(colorObj.value || '');
             }
           }
 
@@ -198,14 +169,10 @@ export default function Stocks() {
 
       const whRes = await fetch('https://marketplace-api.wildberries.ru/api/v3/warehouses', { headers: { 'Authorization': tokenMarketplace } });
       if (!whRes.ok) throw new Error('Ошибка загрузки складов.');
-      const whData = await whRes.json();
-      
-      const parsedWarehouses = whData || [];
-      setWarehouses(parsedWarehouses);
-      localStorage.setItem('wb_fbs_warehouses', JSON.stringify(parsedWarehouses));
+      const parsedWarehouses = await whRes.json() || [];
       
       setSelectedWhIds(prev => {
-        const validIds = parsedWarehouses.map((w: Warehouse) => w.id);
+        const validIds = parsedWarehouses.map((w: any) => w.id);
         if (!prev || prev.length === 0) return validIds;
         return prev.filter(id => validIds.includes(id));
       });
@@ -233,8 +200,40 @@ export default function Stocks() {
       }
 
       const finalStocksData = Array.from(itemGroupMap.values());
-      setStocksData(finalStocksData);
-      localStorage.setItem('wb_fbs_stocks_data', JSON.stringify(finalStocksData));
+
+      // ==========================================
+      // ТРАНЗАКЦИЯ INDEXED_DB (Атомарное сохранение)
+      // ==========================================
+      await db.transaction('rw', db.fbsWarehouses, db.fbsStocks, db.fbsStatusHistory, async () => {
+        // 1. Обновляем склады
+        await db.fbsWarehouses.clear();
+        await db.fbsWarehouses.bulkAdd(parsedWarehouses);
+
+        // 2. Обновляем историю уведомлений (умная проверка изменений)
+        const oldHistory = await db.fbsStatusHistory.toArray();
+        const historyMap = new Map(oldHistory.map(h => [h.id, h]));
+        const newHistoryItems: any[] = [];
+        const now = Date.now();
+
+        finalStocksData.forEach(item => {
+          let currentStatus = 'ok';
+          if (item.totalAmount === 0) currentStatus = 'empty';
+          else if (item.totalAmount <= 5) currentStatus = 'low';
+
+          const prev = historyMap.get(item.id);
+          if (!prev || prev.status !== currentStatus) {
+            newHistoryItems.push({ id: item.id, status: currentStatus, since: now });
+          }
+        });
+
+        if (newHistoryItems.length > 0) {
+          await db.fbsStatusHistory.bulkPut(newHistoryItems);
+        }
+
+        // 3. Сохраняем новые остатки
+        await db.fbsStocks.clear();
+        await db.fbsStocks.bulkAdd(finalStocksData);
+      });
       
       const nowStr = new Date().toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
       setLastUpdated(nowStr);
@@ -389,7 +388,6 @@ export default function Stocks() {
                       <div className="max-w-[120px] whitespace-normal leading-tight mx-auto text-[10px] text-gray-500">{wh.name}</div>
                     </th>
                   ))}
-                  {/* ИЗМЕНЕНО: text-center */}
                   <th className="px-4 py-2.5 text-center bg-blue-50/40 text-blue-700 shadow-[-1px_0_0_0_#dbeafe] sticky right-0 z-30 border-l border-blue-100">
                     Итого
                   </th>
@@ -403,7 +401,6 @@ export default function Stocks() {
                   return (
                     <tr key={item.id} className="hover:bg-gray-50/80 transition-colors bg-white group">
                       
-                      {/* КОЛОНКА 1: ФОТО, НАЗВАНИЕ */}
                       <td className="px-4 py-2 sticky left-0 bg-white group-hover:bg-gray-50/80 z-10 shadow-[1px_0_0_0_#f3f4f6] whitespace-normal min-w-[280px] max-w-[360px]">
                         <div className="flex items-center gap-3">
                           {item.photo ? (
@@ -419,7 +416,6 @@ export default function Stocks() {
                         </div>
                       </td>
 
-                      {/* КОЛОНКА 2: ЦВЕТ */}
                       <td className="px-4 py-2 border-r border-gray-100 text-center align-middle whitespace-normal max-w-[140px]">
                         {item.color ? (
                           <span className="text-[12px] font-semibold text-gray-700 leading-tight block">{item.color}</span>
@@ -428,7 +424,6 @@ export default function Stocks() {
                         )}
                       </td>
 
-                      {/* КОЛОНКА 3: РАЗМЕР */}
                       <td className="px-4 py-2 border-r border-gray-100 text-center align-middle">
                         {showSize ? (
                           <span className="inline-flex items-center justify-center min-w-[36px] px-2 py-0.5 bg-gray-100 border border-gray-200 text-gray-800 text-[12px] font-bold rounded shadow-sm">
@@ -439,7 +434,6 @@ export default function Stocks() {
                         )}
                       </td>
 
-                      {/* КОЛОНКА 4: БАРКОДЫ */}
                       <td className="px-4 py-2 border-r border-gray-100 align-middle">
                         <div className="flex flex-col gap-1 w-max">
                           {item.barcodes.map(b => (
@@ -455,7 +449,6 @@ export default function Stocks() {
                         </div>
                       </td>
 
-                      {/* СКЛАДЫ */}
                       {visibleWarehouses.map(wh => {
                         const amount = item.stocks[wh.id] || 0;
                         return (
@@ -465,7 +458,6 @@ export default function Stocks() {
                         );
                       })}
 
-                      {/* ИТОГОВОЕ КОЛИЧЕСТВО (ИЗМЕНЕНО: text-center) */}
                       <td className="px-4 py-2 text-center bg-blue-50/10 shadow-[-1px_0_0_0_#eff6ff] sticky right-0 z-10 border-l border-blue-50 align-middle">
                         <div className="inline-flex items-center justify-center min-w-[48px] h-[30px] px-2 bg-white border border-gray-200 rounded-md text-[14px] font-black text-gray-800 shadow-sm">
                           {visibleTotal}

@@ -7,6 +7,7 @@ export interface WholesalePrice {
   startDate: string;
   endDate: string;
   nmId?: number;
+  updatedAt?: number;
 }
 
 export interface WbProduct {
@@ -16,20 +17,42 @@ export interface WbProduct {
   photo: string;
 }
 
+// Новые интерфейсы для раздела "Остатки (FBS)"
+export interface FbsWarehouse { id: number; name: string; }
+export interface FbsStockItem {
+  id: string;
+  nmId: number;
+  vendorCode: string;
+  title: string;
+  techSize: string;
+  color: string;
+  barcodes: string[];
+  photo: string;
+  stocks: Record<number, number>;
+  totalAmount: number;
+}
+export interface FbsStatus { id: string; status: string; since: number; }
+
 export class WbAnalyticsDB extends Dexie {
   prices!: Table<WholesalePrice>;
   products!: Table<WbProduct>;
-  // Новое: хранилище сырых строк из отчета WB
   rawReports!: Table<any, number>; 
+  
+  // Хранилища для остатков FBS
+  fbsWarehouses!: Table<FbsWarehouse>;
+  fbsStocks!: Table<FbsStockItem>;
+  fbsStatusHistory!: Table<FbsStatus>;
 
   constructor() {
     super('WbAnalyticsDB');
-    // ВАЖНО: Подняли версию до 2 и добавили таблицу rawReports.
-    // rrd_id - это уникальный ID строки с ВБ, он будет ключом (защита от дублей)
-    this.version(2).stores({
+    // ВАЖНО: Подняли версию до 3
+    this.version(3).stores({
       prices: '++id, name, nmId',
       products: 'nmID, vendorCode, title',
-      rawReports: 'rrd_id, rr_dt, shk_id, nm_id' 
+      rawReports: 'rrd_id, rr_dt, shk_id, nm_id',
+      fbsWarehouses: 'id',
+      fbsStocks: 'id, nmId, vendorCode', 
+      fbsStatusHistory: 'id'
     });
   }
 }

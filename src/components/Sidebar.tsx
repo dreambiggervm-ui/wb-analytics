@@ -4,7 +4,6 @@ import { Package, FileText, BarChart3, Upload, Layers } from 'lucide-react'; // 
 export default function Sidebar() {
   const menuItems = [
     { name: 'Каталог', icon: <Package size={20} />, path: '/' },
-    { name: 'Загрузка цен', icon: <Upload size={20} />, path: '/import' }, // Новая кнопка!
     { name: 'Отчеты', icon: <BarChart3 size={20} />, path: '/reports' },
     { name: 'Остатки (FBS)', icon: <Layers size={20} />, path: '/stocks' },
   ];
