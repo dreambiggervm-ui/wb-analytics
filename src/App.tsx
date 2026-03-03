@@ -4,6 +4,7 @@ import Products from './pages/Products';
 import Reports from './pages/Reports';
 import PriceImport from './pages/PriceImport'; 
 import Stocks from './pages/Stocks';
+import WbSupplies from './pages/WbSupplies';
 
 // Новые страницы
 import MyWarehouse from './pages/MyWarehouse';
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/my-warehouse" element={<MyWarehouse />} />
             <Route path="/suppliers" element={<Suppliers />} />
             <Route path="/supplier-changes" element={<SupplierChanges />} />
+            <Route path="/supplies-fbs" element={<WbSupplies />} />
           </Routes>
         </main>
       </div>

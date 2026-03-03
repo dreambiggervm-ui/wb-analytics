@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, Warehouse, Box, Truck, History } from 'lucide-react';
+import { Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, Warehouse, Box, Truck, History, Download, UploadCloud } from 'lucide-react';
+import { db } from '../db';
 
 export default function Sidebar() {
   const [isWbMenuOpen, setIsWbMenuOpen] = useState(true);
-  const [isStockMenuOpen, setIsStockMenuOpen] = useState(true); // Состояние меню Склада
+  const [isStockMenuOpen, setIsStockMenuOpen] = useState(true);
   const location = useLocation();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isWbActive = ['/', '/catalog', '/reports', '/stocks'].includes(location.pathname);
   const isStockActive = ['/my-warehouse', '/suppliers', '/supplier-changes'].includes(location.pathname);
@@ -14,6 +16,7 @@ export default function Sidebar() {
     { name: 'Каталог', icon: <Package size={18} />, path: '/catalog' },
     { name: 'Отчеты', icon: <BarChart3 size={18} />, path: '/reports' },
     { name: 'Остатки (FBS)', icon: <Layers size={18} />, path: '/stocks' },
+    { name: 'Поставки (Сборка)', icon: <Truck size={18} />, path: '/supplies-fbs' },
   ];
 
   const stockMenuItems = [
@@ -21,6 +24,65 @@ export default function Sidebar() {
     { name: 'Поставщики', icon: <Truck size={18} />, path: '/suppliers' },
     { name: 'Изменения', icon: <History size={18} />, path: '/supplier-changes' },
   ];
+
+  // ==========================================
+  // ЛОГИКА ЭКСПОРТА (СКАЧАТЬ БЭКАП)
+  // ==========================================
+  const handleExport = async () => {
+    try {
+      const allData: Record<string, any[]> = {};
+      // Проходимся по всем таблицам в базе и собираем данные
+      for (const table of db.tables) {
+        allData[table.name] = await table.toArray();
+      }
+      
+      const blob = new Blob([JSON.stringify(allData)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `wb-backup-${new Date().toLocaleDateString('ru-RU')}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Ошибка при экспорте данных');
+      console.error(e);
+    }
+  };
+
+  // ==========================================
+  // ЛОГИКА ИМПОРТА (ВОССТАНОВИТЬ БЭКАП)
+  // ==========================================
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        
+        // Запускаем транзакцию: очищаем старые данные и заливаем новые
+        await db.transaction('rw', db.tables, async () => {
+          for (const table of db.tables) {
+            if (data[table.name]) {
+              await table.clear();
+              await table.bulkAdd(data[table.name]);
+            }
+          }
+        });
+        
+        alert('Резервная копия успешно восстановлена!');
+        window.location.reload(); // Перезагружаем страницу, чтобы интерфейс обновился
+      } catch (err) {
+        console.error(err);
+        alert('Ошибка при чтении файла резервной копии. Убедитесь, что это правильный .json файл.');
+      }
+    };
+    reader.readAsText(file);
+    
+    // Сбрасываем инпут
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   return (
     <div className="w-64 bg-white border-r border-gray-200 h-screen flex flex-col">
@@ -53,7 +115,7 @@ export default function Sidebar() {
           </div>
         </div>
 
-        {/* Категория: Склад (Новая) */}
+        {/* Категория: Склад */}
         <div>
           <button onClick={() => setIsStockMenuOpen(!isStockMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isStockActive && !isStockMenuOpen ? 'bg-blue-50 text-blue-700' : 'text-gray-800 hover:bg-gray-50'}`}>
             <div className="flex items-center gap-3">
@@ -72,8 +134,30 @@ export default function Sidebar() {
             </div>
           </div>
         </div>
-
       </nav>
+
+      {/* БЛОК РЕЗЕРВНОГО КОПИРОВАНИЯ ВНИЗУ МЕНЮ */}
+      <div className="p-4 border-t border-gray-100 bg-gray-50/50">
+        <h4 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-3 px-2">Данные (Резерв)</h4>
+        <div className="space-y-2">
+          <button 
+            onClick={handleExport}
+            className="w-full flex items-center gap-3 px-3 py-2 bg-white border border-gray-200 rounded-lg text-[13px] font-bold text-gray-700 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 transition-colors shadow-sm"
+          >
+            <Download size={16} /> Скачать бэкап
+          </button>
+          
+          <input type="file" accept=".json" ref={fileInputRef} onChange={handleImport} className="hidden" />
+          
+          <button 
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full flex items-center gap-3 px-3 py-2 bg-white border border-gray-200 rounded-lg text-[13px] font-bold text-gray-700 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 transition-colors shadow-sm"
+          >
+            <UploadCloud size={16} /> Восстановить
+          </button>
+        </div>
+      </div>
+
     </div>
   );
 }
