@@ -26,18 +26,19 @@ export interface Supplier { id?: number; title: string; sourceUrl: string; sheet
 export interface SupplierChange { id?: number; supplierId: number; supplierName: string; sheetName: string; category: string; title: string; field: string; oldValue: string; newValue: string; changeDate: string; }
 export interface WbSupply { id: string; name: string; createdAt: string; closedAt?: string; done: boolean; }
 export interface WbOrder { id: number; supplyId?: string; article: string; title: string; price: number; supplierStatus?: string; createdAt: string; localDeducted?: boolean; nmId?: number; }
-export interface WbLink { nmId: number; myStockItemId: number; }
 
-// НОВОЕ: Интерфейс для ручных отгрузок (Заказы со склада)
+// ИЗМЕНЕНО: Добавлен id для множественных связей
+export interface WbLink { id?: number; nmId: number; myStockItemId: number; }
+
 export interface ManualOrder {
   id?: number;
   myStockItemId: number;
   title: string;
   quantity: number;
-  salePrice: number; // Цена продажи за 1 шт.
+  salePrice: number; 
   shippingType: 'Самовывоз' | 'Курьер' | 'ТК';
-  date: string; // YYYY-MM-DD
-  createdAt: string; // Точное время создания (ISO)
+  date: string; 
+  createdAt: string; 
 }
 
 export class WbAnalyticsDB extends Dexie {
@@ -53,12 +54,13 @@ export class WbAnalyticsDB extends Dexie {
   supplierChanges!: Table<SupplierChange>;
   wbSupplies!: Table<WbSupply>;
   wbOrders!: Table<WbOrder>;
-  wbLinks!: Table<WbLink>;
-  manualOrders!: Table<ManualOrder>; // НОВАЯ ТАБЛИЦА
+  wbLinksV2!: Table<WbLink>; // НОВАЯ ТАБЛИЦА СВЯЗЕЙ
+  manualOrders!: Table<ManualOrder>; 
 
   constructor() {
     super('WbAnalyticsDB');
-    // ВАЖНО: Подняли версию до 12
+    
+    // Версия 12 (Старая)
     this.version(12).stores({
       prices: '++id, name, nmId',
       products: 'nmID, vendorCode, title',
@@ -73,7 +75,20 @@ export class WbAnalyticsDB extends Dexie {
       wbSupplies: 'id, createdAt, done',
       wbOrders: 'id, supplyId, supplierStatus, createdAt',
       wbLinks: 'nmId, myStockItemId',
-      manualOrders: '++id, date, myStockItemId, shippingType' // Индексы для заказов
+      manualOrders: '++id, date, myStockItemId, shippingType' 
+    });
+
+    // ВЕРСИЯ 13: Безопасный перенос связей
+    this.version(13).stores({
+      wbLinks: null, // Удаляем старую жесткую таблицу
+      wbLinksV2: '++id, nmId, myStockItemId' // Создаем новую гибкую таблицу
+    }).upgrade(async tx => {
+      // Автоматически переносим твои старые привязки в новую структуру!
+      const oldLinks = await tx.table('wbLinks').toArray();
+      if (oldLinks.length > 0) {
+        const newLinks = oldLinks.map((l: any) => ({ nmId: l.nmId, myStockItemId: l.myStockItemId }));
+        await tx.table('wbLinksV2').bulkAdd(newLinks);
+      }
     });
   }
 }

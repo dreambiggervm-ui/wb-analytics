@@ -77,9 +77,8 @@ export default function Reports() {
   const savedProducts = useLiveQuery(() => db.products.toArray()) || [];
   const rawReports = useLiveQuery(() => db.rawReports.toArray()) || [];
   
-  // НОВОЕ: Подтягиваем склад для FIFO
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || []; // ОБНОВЛЕНО
 
   const loadNewReports = async () => {
     if (!token) return alert('API Токен (Статистика) не найден!');
@@ -111,19 +110,12 @@ export default function Reports() {
     navigate('/', { state: { openEditModalNmId: nmId } });
   };
 
-  // ==========================================
-  // АЛГОРИТМ РАСЧЕТА (С ДОБАВЛЕНИЕМ FIFO)
-  // ==========================================
   const { detailedData, productAnalytics, dashboardData, filteredRawReports, missingPriceItems } = useMemo(() => {
     
-    // ----------------------------------------------------
-    // НОВЫЙ БЛОК: Подготовка истории FIFO для всех продаж
-    // ----------------------------------------------------
     const nmReceiptsMap = new Map();
-    wbLinks.forEach(link => {
+    wbLinks.forEach((link: any) => {
       const myItem = myWarehouse.find(m => m.id === link.myStockItemId);
       if (myItem && myItem.receipts && myItem.receipts.length > 0) {
-        // Клонируем партии, сортируем по дате и добавляем счетчик 'used'
         const sorted = [...myItem.receipts].sort((a, b) => a.date.localeCompare(b.date)).map(r => ({...r, used: 0}));
         nmReceiptsMap.set(link.nmId, sorted);
       }
@@ -131,7 +123,6 @@ export default function Reports() {
 
     const shkCostMap = new Map();
     
-    // Сортируем все отчеты хронологически, чтобы списывать партии по очереди
     const allSales = rawReports.filter(row => {
       const doc = (row.doc_type_name || "").toLowerCase();
       const op = (row.supplier_oper_name || "").toLowerCase();
@@ -156,7 +147,6 @@ export default function Reports() {
         let costSum = 0;
         for (const r of receipts) {
           if (rem <= 0) break;
-          // Используем партию, если ее дата <= дате продажи и в ней есть остаток
           if (r.date <= date && r.used < r.quantity) {
             const take = Math.min(r.quantity - r.used, rem);
             r.used += take;
@@ -164,7 +154,6 @@ export default function Reports() {
             rem -= take;
           }
         }
-        // Если партии закончились или продажа была раньше первой партии - берем из ручных цен
         if (rem > 0) {
           costSum += rem * getPriceForDate(nmId, date, savedPrices);
         }
@@ -176,7 +165,6 @@ export default function Reports() {
       if (shk !== 0) shkCostMap.set(shk, unitCost);
       shkCostMap.set(`rrd_${sale.rrd_id}`, unitCost);
     });
-    // ----------------------------------------------------
 
     const shkMap = new Map<number, any>();
     const nmMap = new Map<number, any>();
@@ -232,7 +220,6 @@ export default function Reports() {
         unit.isReturnedToSeller = true;
       }
 
-      // Для сводных операций
       if (shk === 0 && (docType === 'продажа' || operName.includes('компенсация'))) {
         unit.aggregatedCost += (shkCostMap.get(`rrd_${row.rrd_id}`) || 0) * (row.quantity || 1);
       }
@@ -253,14 +240,13 @@ export default function Reports() {
       else if (unit.hasSale) unit.status = 'Продажа';
       else unit.status = 'Логистика / Обработка';
 
-      // НОВОЕ: Назначаем стоимость с учетом FIFO
       if (unit.shk_id !== 0) {
          unit.cost = shkCostMap.get(unit.shk_id) !== undefined ? shkCostMap.get(unit.shk_id) : getPriceForDate(unit.nm_id, unit.first_date, savedPrices);
       } else {
          unit.cost = unit.aggregatedCost || 0;
       }
       
-      unit.isLinked = wbLinks.some(l => l.nmId === unit.nm_id);
+      unit.isLinked = wbLinks.some((l: any) => l.nmId === unit.nm_id);
 
       if (unit.nm_id !== 0 && unit.cost === 0 && !uniqueMissingMap.has(unit.nm_id)) {
         uniqueMissingMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode });
@@ -310,7 +296,6 @@ export default function Reports() {
     };
   }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd, myWarehouse, wbLinks]);
 
-  // Фильтры Вкладки 2
   const processedDetailedItems = useMemo(() => {
     let result = [...detailedData];
     if (detFilterStatus !== 'All') result = result.filter(u => u.status === detFilterStatus);
@@ -335,7 +320,6 @@ export default function Reports() {
   const detCurrentItems = processedDetailedItems.slice(0, detDisplayCount);
   const detHasMore = detDisplayCount < processedDetailedItems.length;
 
-  // Фильтры Вкладки 4
   const processedRawItems = useMemo(() => {
     let result = [...filteredRawReports];
     if (rawDateStart || rawDateEnd) {

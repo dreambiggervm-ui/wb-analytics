@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ShoppingCart, User, Truck, Package, Search, PlusCircle, Trash2, ArrowRight } from 'lucide-react';
+import { ShoppingCart, User, Truck, Package, Search, PlusCircle, Trash2, ArrowRight, Flame } from 'lucide-react';
 import { db, MyStockItem, ManualOrder } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { PageLayout, Toolbar, Button, SearchInput } from '../components/ui';
@@ -22,6 +22,26 @@ export default function PosTerminal() {
       .filter(o => o.date === todayStr)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [manualOrders, todayStr]);
+
+  // НОВОЕ: Вычисляем самые популярные товары на основе истории продаж
+  const popularItems = useMemo(() => {
+    const salesCount: Record<number, number> = {};
+    
+    // Считаем количество проданных штук каждого товара
+    manualOrders.forEach(order => {
+      salesCount[order.myStockItemId] = (salesCount[order.myStockItemId] || 0) + order.quantity;
+    });
+
+    // Сортируем склад по популярности (по убыванию)
+    const sortedStock = [...stockItems].sort((a, b) => {
+      const countA = salesCount[a.id!] || 0;
+      const countB = salesCount[b.id!] || 0;
+      return countB - countA;
+    });
+
+    // Берем топ-6 товаров, которые есть в наличии
+    return sortedStock.filter(item => item.quantity > 0).slice(0, 6);
+  }, [stockItems, manualOrders]);
 
   const searchFilteredStock = useMemo(() => {
     if (!searchQuery) return [];
@@ -67,7 +87,7 @@ export default function PosTerminal() {
       await db.manualOrders.add(newOrder);
       
       // 2. Обновляем остаток на складе
-      await db.myWarehouse.update(selectedItem.id!, { quantity: newQty });
+      await db.myWarehouse.update(selectedItem.id!, { quantity: newQty } as any);
       
       // 3. Пишем лог
       await db.myWarehouseChanges.add({
@@ -99,7 +119,7 @@ export default function PosTerminal() {
       if (item) {
         // Возвращаем остаток
         const restoredQty = item.quantity + order.quantity;
-        await db.myWarehouse.update(item.id!, { quantity: restoredQty });
+        await db.myWarehouse.update(item.id!, { quantity: restoredQty } as any);
         
         await db.myWarehouseChanges.add({
           itemId: item.id,
@@ -114,7 +134,6 @@ export default function PosTerminal() {
   };
 
   const totalTodayRevenue = todaysOrders.reduce((sum, o) => sum + (o.quantity * o.salePrice), 0);
-  const totalTodayItems = todaysOrders.reduce((sum, o) => sum + o.quantity, 0);
 
   return (
     <PageLayout>
@@ -139,26 +158,52 @@ export default function PosTerminal() {
             <div className="relative">
               <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">1. Выберите товар со склада</label>
               {!selectedItem ? (
-                <div className="relative">
-                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input 
-                    type="text" 
-                    value={searchQuery} 
-                    onChange={e => setSearchQuery(e.target.value)} 
-                    placeholder="Начните вводить название..." 
-                    className="w-full bg-white border border-gray-300 rounded-xl py-3 pl-10 pr-4 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-                  {searchFilteredStock.length > 0 && (
-                    <div className="absolute top-full left-0 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 max-h-60 overflow-y-auto">
-                      {searchFilteredStock.map(item => (
-                        <div key={item.id} onClick={() => handleSelectItem(item)} className="p-3 hover:bg-blue-50 cursor-pointer border-b border-gray-50 last:border-b-0">
-                          <p className="text-[13px] font-bold text-gray-800 leading-snug">{item.title}</p>
-                          <p className="text-[11px] text-gray-500 mt-0.5">Остаток: <span className={item.quantity > 0 ? "text-green-600 font-bold" : "text-red-500 font-bold"}>{item.quantity} шт</span></p>
-                        </div>
-                      ))}
+                <>
+                  <div className="relative">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input 
+                      type="text" 
+                      value={searchQuery} 
+                      onChange={e => setSearchQuery(e.target.value)} 
+                      placeholder="Начните вводить название..." 
+                      className="w-full bg-white border border-gray-300 rounded-xl py-3 pl-10 pr-4 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                    {searchFilteredStock.length > 0 && (
+                      <div className="absolute top-full left-0 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 max-h-60 overflow-y-auto">
+                        {searchFilteredStock.map(item => (
+                          <div key={item.id} onClick={() => handleSelectItem(item)} className="p-3 hover:bg-blue-50 cursor-pointer border-b border-gray-50 last:border-b-0">
+                            <p className="text-[13px] font-bold text-gray-800 leading-snug">{item.title}</p>
+                            <p className="text-[11px] text-gray-500 mt-0.5">Остаток: <span className={item.quantity > 0 ? "text-green-600 font-bold" : "text-red-500 font-bold"}>{item.quantity} шт</span></p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* НОВОЕ: Популярные товары */}
+                  {popularItems.length > 0 && !searchQuery && (
+                    <div className="mt-6">
+                      <label className="flex items-center gap-1.5 text-[11px] font-bold text-orange-500 uppercase tracking-widest mb-3">
+                        <Flame size={14} /> Часто продаваемые
+                      </label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {popularItems.map(item => (
+                          <div 
+                            key={item.id} 
+                            onClick={() => handleSelectItem(item)}
+                            className="p-3 bg-white border border-gray-200 hover:border-orange-300 hover:bg-orange-50/50 rounded-xl cursor-pointer transition-colors shadow-sm"
+                          >
+                            <p className="text-[12px] font-bold text-gray-800 leading-snug line-clamp-2" title={item.title}>{item.title}</p>
+                            <div className="flex justify-between items-center mt-2">
+                              <span className="text-[11px] text-gray-500">{item.price} ₽</span>
+                              <span className="text-[10px] font-bold text-green-600 bg-green-50 px-1.5 py-0.5 rounded">{item.quantity} шт</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
-                </div>
+                </>
               ) : (
                 <div className="flex items-center justify-between p-4 bg-blue-50 border border-blue-200 rounded-xl">
                   <div>
@@ -174,7 +219,7 @@ export default function PosTerminal() {
 
             {selectedItem && (
               <>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
                   <div>
                     <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">2. Количество (шт)</label>
                     <input type="number" min="1" value={sellQty} onChange={e => setSellQty(Number(e.target.value))} className="w-full bg-white border border-gray-300 rounded-xl py-3 px-4 text-[16px] font-bold focus:ring-2 focus:ring-blue-500 outline-none" placeholder="1" />
@@ -185,22 +230,22 @@ export default function PosTerminal() {
                   </div>
                 </div>
 
-                <div>
+                <div className="animate-in fade-in slide-in-from-top-2 duration-300 delay-75">
                   <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">4. Способ отгрузки</label>
                   <div className="flex gap-3">
-                    <button onClick={() => setShippingType('Самовывоз')} className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${shippingType === 'Самовывоз' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+                    <button onClick={() => setShippingType('Самовывоз')} className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${shippingType === 'Самовывоз' ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
                       <User size={20} className="mb-1"/> <span className="font-bold text-[12px]">Самовывоз</span>
                     </button>
-                    <button onClick={() => setShippingType('Курьер')} className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${shippingType === 'Курьер' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+                    <button onClick={() => setShippingType('Курьер')} className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${shippingType === 'Курьер' ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
                       <Package size={20} className="mb-1"/> <span className="font-bold text-[12px]">Курьер</span>
                     </button>
-                    <button onClick={() => setShippingType('ТК')} className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${shippingType === 'ТК' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
-                      <Truck size={20} className="mb-1"/> <span className="font-bold text-[12px]">Транспортная (ТК)</span>
+                    <button onClick={() => setShippingType('ТК')} className={`flex-1 flex flex-col items-center justify-center p-3 rounded-xl border-2 transition-all ${shippingType === 'ТК' ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+                      <Truck size={20} className="mb-1"/> <span className="font-bold text-[12px]">Доставка (ТК)</span>
                     </button>
                   </div>
                 </div>
 
-                <div className="pt-4 border-t border-gray-100">
+                <div className="pt-4 border-t border-gray-100 animate-in fade-in slide-in-from-top-2 duration-300 delay-150">
                   <button onClick={handleSell} className="w-full py-4 bg-green-500 hover:bg-green-600 text-white rounded-xl text-[16px] font-bold shadow-md transition-colors flex items-center justify-center gap-2">
                     <PlusCircle size={20} /> Провести отгрузку
                   </button>

@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from 'react';
-import { Upload, Plus, Minus, PackageSearch, Trash2, Edit3, History, ArrowRight, X, Download, FileSpreadsheet, Save, Filter, Link as LinkIcon, Unlink, Box } from 'lucide-react';
+import { Upload, Plus, Minus, PackageSearch, Trash2, Edit3, History, ArrowRight, X, Download, FileSpreadsheet, Save, Filter, Link as LinkIcon, Unlink, Box, PackagePlus } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { db, MyStockItem, StockReceipt } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -9,9 +9,8 @@ export default function MyWarehouse() {
   const stockItems = useLiveQuery(() => db.myWarehouse.toArray()) || [];
   const changes = useLiveQuery(() => db.myWarehouseChanges.toArray()) || [];
   
-  // Подтягиваем данные каталога WB для связей (они лежат в fbsStocks)
   const wbProducts = useLiveQuery(() => db.fbsStocks.toArray()) || []; 
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || [];
   
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -20,13 +19,15 @@ export default function MyWarehouse() {
   const [historyItem, setHistoryItem] = useState<MyStockItem | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<Partial<MyStockItem>>({});
-  
-  // Состояние для редактирования партий (поступлений)
   const [editingReceipts, setEditingReceipts] = useState<StockReceipt[]>([]);
   
-  // Состояния для привязки ВБ
   const [linkingStockId, setLinkingStockId] = useState<number | null>(null);
   const [linkSearchWb, setLinkSearchWb] = useState('');
+
+  // Состояния для окна комплектации
+  const [kittingItem, setKittingItem] = useState<MyStockItem | null>(null);
+  const [kittingItemsPerKit, setKittingItemsPerKit] = useState<number>(2);
+  const [kittingCount, setKittingCount] = useState<number>(1);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -37,20 +38,11 @@ export default function MyWarehouse() {
 
   const filteredItems = useMemo(() => {
     let result = [...stockItems];
-    
-    if (selectedCategory) {
-      result = result.filter(item => (item.category || 'Без категории') === selectedCategory);
-    }
-
+    if (selectedCategory) result = result.filter(item => (item.category || 'Без категории') === selectedCategory);
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      result = result.filter(item => 
-        item.title.toLowerCase().includes(q) || 
-        (item.category && item.category.toLowerCase().includes(q)) ||
-        (item.note && item.note.toLowerCase().includes(q))
-      );
+      result = result.filter(item => item.title.toLowerCase().includes(q) || (item.category && item.category.toLowerCase().includes(q)) || (item.note && item.note.toLowerCase().includes(q)));
     }
-    
     result.sort((a, b) => a.title.localeCompare(b.title));
     return result;
   }, [stockItems, searchQuery, selectedCategory]);
@@ -58,61 +50,37 @@ export default function MyWarehouse() {
   const searchFilteredWbProducts = useMemo(() => {
     let result = wbProducts;
     
-    // 1. Ручной поиск (если пользователь начал вводить текст в модальном окне)
     if (linkSearchWb) {
       const q = linkSearchWb.toLowerCase();
-      result = wbProducts.filter(p => 
-        (p.title || '').toLowerCase().includes(q) || 
-        (p.vendorCode || '').toLowerCase().includes(q) ||
-        String(p.nmId).includes(q)
-      );
+      result = wbProducts.filter(p => (p.title || '').toLowerCase().includes(q) || (p.vendorCode || '').toLowerCase().includes(q) || String(p.nmId).includes(q));
     }
 
-    // 2. Убираем дубликаты (оставляем только уникальные nmId)
     const uniqueProducts = [];
     const seen = new Set();
     for (const item of result) {
-      if (!seen.has(item.nmId)) {
-        seen.add(item.nmId);
-        uniqueProducts.push(item);
-      }
+      if (!seen.has(item.nmId)) { seen.add(item.nmId); uniqueProducts.push(item); }
     }
 
-    // 3. УМНАЯ СОРТИРОВКА: поднимаем вверх наиболее подходящие товары
     if (linkingStockId) {
       const localItem = stockItems.find(item => item.id === linkingStockId);
-      
       if (localItem) {
         const localTitle = (localItem.title || '').toLowerCase();
         const localNote = (localItem.note || '').toLowerCase();
-        
-        // Разбиваем наименование локального товара на слова (длиннее 2 букв), чтобы искать совпадения
         const localWords = localTitle.split(/[\s,.-]+/).filter(w => w.length > 2);
 
         uniqueProducts.sort((a, b) => {
-          let scoreA = 0;
-          let scoreB = 0;
-          
-          const titleA = (a.title || '').toLowerCase();
-          const vendorA = (a.vendorCode || '').toLowerCase();
-          
-          const titleB = (b.title || '').toLowerCase();
-          const vendorB = (b.vendorCode || '').toLowerCase();
+          let scoreA = 0; let scoreB = 0;
+          const titleA = (a.title || '').toLowerCase(); const vendorA = (a.vendorCode || '').toLowerCase();
+          const titleB = (b.title || '').toLowerCase(); const vendorB = (b.vendorCode || '').toLowerCase();
 
-          // --- Оценка товара А (первая карточка WB) ---
-          // Наивысший приоритет: Прямое совпадение артикула WB в названии или примечании локального склада
           if (vendorA && (localTitle.includes(vendorA) || localNote.includes(vendorA))) scoreA += 100;
-          // Полное совпадение названия
           if (titleA === localTitle) scoreA += 50;
-          // Частичное совпадение: добавляем очки за каждое общее слово
           localWords.forEach(w => { if (titleA.includes(w)) scoreA += 5; });
 
-          // --- Оценка товара B (вторая карточка WB) ---
           if (vendorB && (localTitle.includes(vendorB) || localNote.includes(vendorB))) scoreB += 100;
           if (titleB === localTitle) scoreB += 50;
           localWords.forEach(w => { if (titleB.includes(w)) scoreB += 5; });
 
-          // Сортируем по убыванию очков (чем больше очков, тем выше в списке)
           return scoreB - scoreA;
         });
       }
@@ -126,28 +94,31 @@ export default function MyWarehouse() {
       await db.myWarehouse.delete(id);
       await db.myWarehouseChanges.where('itemId').equals(id).delete();
       
-      const linksToDelete = await db.wbLinks.where('myStockItemId').equals(id).toArray();
+      const linksToDelete = await db.wbLinksV2.where('myStockItemId').equals(id).toArray();
       for (const link of linksToDelete) {
-        await db.wbLinks.where('nmId').equals(link.nmId).delete();
+        if (link.id) await db.wbLinksV2.delete(link.id);
       }
     }
   };
 
   const handleLinkWb = async (nmId: number) => {
     if (!linkingStockId) return;
-    await db.wbLinks.put({ nmId: nmId, myStockItemId: linkingStockId });
-    setLinkingStockId(null);
-    setLinkSearchWb('');
+    const existingLinks = await db.wbLinksV2.where('nmId').equals(nmId).toArray();
+    const alreadyLinked = existingLinks.find(l => l.myStockItemId === linkingStockId);
+    if (!alreadyLinked) await db.wbLinksV2.add({ nmId: nmId, myStockItemId: linkingStockId });
+    setLinkingStockId(null); setLinkSearchWb('');
   };
 
-  const handleUnlinkWb = async (nmId: number) => {
+  const handleUnlinkWb = async (nmId: number, stockItemId: number) => {
     if (window.confirm('Отвязать карточку Wildberries от этого товара?')) {
-      await db.wbLinks.where('nmId').equals(nmId).delete();
+      const links = await db.wbLinksV2.where('nmId').equals(nmId).toArray();
+      const linkToDelete = links.find(l => l.myStockItemId === stockItemId);
+      if (linkToDelete && linkToDelete.id) await db.wbLinksV2.delete(linkToDelete.id);
     }
   };
 
   const handleDownloadTemplate = () => {
-    const data = [{ 'Категория': 'Одежда', 'Наименование': 'Пример: Футболка белая', 'Опт': 500, 'Остаток': 15, 'Дата': new Date().toLocaleDateString('ru-RU'), 'Примечание': 'На витрине' }];
+    const data = [{ 'Категория': 'Одежда', 'Наименование': 'Пример: Футболка белая', 'Опт': 500, 'Остаток': 15, 'Примечание': 'На витрине' }];
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Шаблон');
@@ -194,7 +165,6 @@ export default function MyWarehouse() {
       const colPrice = headers.findIndex(h => ['опт', 'цена', 'закупка'].includes(h));
       const colStock = headers.findIndex(h => ['остаток', 'склад', 'кол-во', 'количество'].includes(h));
       const colNote = headers.findIndex(h => ['примечание', 'инфо', 'описание'].includes(h));
-      const colDate = headers.findIndex(h => ['дата', 'дата поступления', 'поступление'].includes(h));
 
       if (colTitle === -1) throw new Error('Не найдена колонка "Наименование"');
 
@@ -214,24 +184,6 @@ export default function MyWarehouse() {
         const quantity = colStock !== -1 ? parseInt(String(row[colStock]).replace(/[^\d-]/g, ''), 10) || 0 : 0;
         const note = colNote !== -1 && row[colNote] ? String(row[colNote]).trim() : '';
 
-        // Парсинг даты из Excel
-        let receiptDate = todayDate;
-        if (colDate !== -1 && row[colDate]) {
-          const rawDate = row[colDate];
-          if (typeof rawDate === 'number') {
-            const dateObj = new Date(Math.round((rawDate - 25569) * 86400 * 1000));
-            if (!isNaN(dateObj.getTime())) receiptDate = dateObj.toISOString().split('T')[0];
-          } else {
-            const parts = String(rawDate).split('.');
-            if (parts.length === 3) {
-              receiptDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
-            } else {
-              const parsed = new Date(String(rawDate));
-              if (!isNaN(parsed.getTime())) receiptDate = parsed.toISOString().split('T')[0];
-            }
-          }
-        }
-
         const existingItem = stockItems.find(item => item.title.toLowerCase() === title.toLowerCase());
 
         if (existingItem) {
@@ -239,28 +191,17 @@ export default function MyWarehouse() {
           
           const addedQty = quantity - existingItem.quantity;
           const newReceipts = existingItem.receipts ? [...existingItem.receipts] : [];
-          if (addedQty > 0) {
-            newReceipts.push({ date: receiptDate, quantity: addedQty, price: price });
-          }
+          if (addedQty > 0) newReceipts.push({ date: todayDate, quantity: addedQty, price: price });
 
           const updatedItem = { ...existingItem, category, price, quantity, note: note || existingItem.note, receipts: newReceipts };
 
-          if (existingItem.price !== price) {
-            logsToSave.push({ itemId: existingItem.id, title, field: 'Опт', oldValue: String(existingItem.price), newValue: String(price), changeDate: now });
-            changed = true;
-          }
-          if (existingItem.quantity !== quantity) {
-            logsToSave.push({ itemId: existingItem.id, title, field: 'Остаток', oldValue: String(existingItem.quantity), newValue: String(quantity), changeDate: now });
-            changed = true;
-          }
+          if (existingItem.price !== price) { logsToSave.push({ itemId: existingItem.id, title, field: 'Опт', oldValue: String(existingItem.price), newValue: String(price), changeDate: now }); changed = true; }
+          if (existingItem.quantity !== quantity) { logsToSave.push({ itemId: existingItem.id, title, field: 'Остаток', oldValue: String(existingItem.quantity), newValue: String(quantity), changeDate: now }); changed = true; }
           if (existingItem.note !== note && note !== '') changed = true;
 
           if (changed || existingItem.category !== category) itemsToUpdate.push(updatedItem);
         } else {
-          newItemsToSave.push({ 
-            title, category, price, quantity, note,
-            receipts: [{ date: receiptDate, quantity, price }]
-          });
+          newItemsToSave.push({ title, category, price, quantity, note, receipts: [{ date: todayDate, quantity, price }] });
         }
       }
 
@@ -286,6 +227,103 @@ export default function MyWarehouse() {
     setIsManualModalOpen(true);
   };
 
+  // ОТКРЫТИЕ ОКНА КОМПЛЕКТАЦИИ
+  const openKittingModal = (item: MyStockItem) => {
+    if (!item.id) return alert('Сначала сохраните товар!');
+    if (item.quantity <= 0) return alert('Остаток товара равен 0, комплектовать не из чего.');
+    
+    setKittingItem(item);
+    setKittingItemsPerKit(2);
+    setKittingCount(1);
+    setIsManualModalOpen(false); // Закрываем окно редактирования, если оно открыто
+  };
+
+  // ЛОГИКА КОМПЛЕКТАЦИИ (FIFO)
+  const handleSaveKitting = async () => {
+    if (!kittingItem || !kittingItem.id) return;
+    const totalToDeduct = kittingItemsPerKit * kittingCount;
+    
+    if (totalToDeduct > kittingItem.quantity) {
+      return alert(`Недостаточно товара на складе! Нужно ${totalToDeduct} шт, а в наличии ${kittingItem.quantity} шт.`);
+    }
+
+    let remainingToDeduct = totalToDeduct;
+    let totalCost = 0;
+    
+    // Клонируем и сортируем партии донора (от старых к новым)
+    const sourceReceipts = kittingItem.receipts ? JSON.parse(JSON.stringify(kittingItem.receipts)) : [];
+    sourceReceipts.sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    // Списываем по FIFO
+    for (let i = 0; i < sourceReceipts.length; i++) {
+      if (remainingToDeduct <= 0) break;
+      const r = sourceReceipts[i];
+      if (r.quantity > 0) {
+        const take = Math.min(r.quantity, remainingToDeduct);
+        r.quantity -= take;
+        remainingToDeduct -= take;
+        totalCost += take * r.price;
+      }
+    }
+
+    // Если партий не было, используем базовую цену
+    if (totalCost === 0 && kittingItem.price > 0) {
+      totalCost = kittingItem.price * totalToDeduct;
+    }
+
+    // Фильтруем пустые партии донора
+    const updatedSourceReceipts = sourceReceipts.filter((r: any) => r.quantity > 0);
+    const newSourceQty = kittingItem.quantity - totalToDeduct;
+    const sourcePrice = updatedSourceReceipts.length > 0 ? updatedSourceReceipts[updatedSourceReceipts.length - 1].price : kittingItem.price;
+
+    const kitPrice = totalCost / kittingCount; // Себестоимость одного комплекта
+    const kitTitle = `${kittingItem.title} (${kittingItemsPerKit} шт.)`;
+    const today = new Date().toISOString().split('T')[0];
+    const nowISO = new Date().toISOString();
+
+    // Проверяем, существует ли уже такой комплект
+    const existingKit = await db.myWarehouse.where('title').equals(kitTitle).first();
+
+    await db.transaction('rw', db.myWarehouse, db.myWarehouseChanges, async () => {
+      // 1. Обновляем товар-донор
+      await db.myWarehouse.update(kittingItem.id!, {
+        quantity: newSourceQty,
+        receipts: updatedSourceReceipts,
+        price: sourcePrice
+      } as any);
+      await db.myWarehouseChanges.add({ itemId: kittingItem.id, title: kittingItem.title, field: 'Остаток (Списано на сборку)', oldValue: String(kittingItem.quantity), newValue: String(newSourceQty), changeDate: nowISO });
+
+      // 2. Создаем или обновляем комплект
+      if (existingKit) {
+         const kitReceipts = existingKit.receipts ? [...existingKit.receipts] : [];
+         kitReceipts.push({ date: today, quantity: kittingCount, price: kitPrice });
+         const newKitQty = existingKit.quantity + kittingCount;
+         
+         await db.myWarehouse.update(existingKit.id!, {
+           quantity: newKitQty,
+           receipts: kitReceipts,
+           price: kitPrice // Обновляем текущую цену по последней партии
+         } as any);
+         await db.myWarehouseChanges.add({ itemId: existingKit.id, title: kitTitle, field: 'Остаток (Скомплектовано)', oldValue: String(existingKit.quantity), newValue: String(newKitQty), changeDate: nowISO });
+      } else {
+         const newKit = {
+           title: kitTitle,
+           category: kittingItem.category,
+           price: kitPrice,
+           quantity: kittingCount,
+           note: 'Создано из комплектации',
+           receipts: [{ date: today, quantity: kittingCount, price: kitPrice }]
+         } as MyStockItem;
+         
+         const newId = await db.myWarehouse.add(newKit);
+         await db.myWarehouseChanges.add({ itemId: newId as number, title: kitTitle, field: 'Остаток (Новый комплект)', oldValue: "0", newValue: String(kittingCount), changeDate: nowISO });
+      }
+    });
+
+    alert(`Комплектация успешно завершена!\nСоздано: ${kitCount} шт. "${kitTitle}"\nСписано: ${totalToDeduct} шт.`);
+    setKittingItem(null);
+  };
+
   const handleReceiptChange = (index: number, field: keyof StockReceipt, value: string) => {
     const updated = [...editingReceipts];
     updated[index] = { ...updated[index], [field]: field === 'date' ? value : Number(value) };
@@ -302,7 +340,7 @@ export default function MyWarehouse() {
       price: Number(editingItem.price) || 0,
       quantity: Number(editingItem.quantity) || 0,
       note: editingItem.note || '',
-      receipts: editingReceipts.filter(r => r.quantity > 0)
+      receipts: editingReceipts.filter(r => r.quantity > 0) 
     } as MyStockItem;
 
     if (!itemToSave.id && itemToSave.receipts!.length > 0 && itemToSave.quantity === 0) {
@@ -347,9 +385,7 @@ export default function MyWarehouse() {
       <Toolbar>
         <div className="flex items-center gap-4 flex-1">
           <h1 className="text-[16px] font-bold text-[#1e3a5f] pr-4 border-r border-gray-200 uppercase tracking-wider">Мой Склад</h1>
-          
           <SearchInput value={searchQuery} onChange={setSearchQuery} placeholder="Поиск товара..." />
-          
           <div className="relative flex items-center">
             <Filter size={14} className="absolute left-3 text-gray-400" />
             <select
@@ -358,30 +394,24 @@ export default function MyWarehouse() {
               className="pl-8 pr-8 py-2 bg-white border border-gray-200 rounded-lg text-[13px] text-gray-600 font-medium outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow shadow-sm cursor-pointer hover:bg-gray-50"
             >
               <option value="">Все категории</option>
-              {uniqueCategories.map(cat => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
+              {uniqueCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
             </select>
           </div>
         </div>
-        
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={handleDownloadTemplate} title="Скачать пустой шаблон для заполнения">
              <FileSpreadsheet size={16} className="text-green-600" /> Шаблон
           </Button>
-
           {stockItems.length > 0 && (
             <Button variant="outline" onClick={handleExportWarehouse} title="Выгрузить весь склад">
                <Download size={16} className="text-blue-600" /> Экспорт
             </Button>
           )}
-
           <input type="file" accept=".xlsx, .xls" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
           <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>
             <Upload size={16} className={isLoading ? "animate-pulse" : "text-gray-600"} />
             {isLoading ? 'Загрузка...' : 'Загрузить Excel'}
           </Button>
-
           <Button onClick={() => openManualModal()} className="ml-2">
             <Plus size={16} /> Добавить
           </Button>
@@ -446,13 +476,11 @@ export default function MyWarehouse() {
                                  <span className="text-[11px] font-bold text-blue-900 leading-tight line-clamp-1" title={p!.title}>{p!.title}</span>
                                  <span className="text-[10px] text-gray-500 mt-0.5">Арт: {p!.vendorCode}</span>
                                </div>
-                               <button onClick={() => handleUnlinkWb(p!.nmId)} className="text-blue-300 hover:text-red-500 transition-colors flex-shrink-0" title="Отвязать WB карточку">
+                               <button onClick={() => handleUnlinkWb(p!.nmId, item.id!)} className="text-blue-300 hover:text-red-500 transition-colors flex-shrink-0" title="Отвязать WB карточку">
                                  <Unlink size={14} />
                                </button>
                              </div>
                           ))}
-                          
-                          {/* Кнопка показывается только если нет привязанных карточек */}
                           {linkedWbItems.length === 0 && (
                             <button 
                               onClick={() => setLinkingStockId(item.id!)} 
@@ -470,6 +498,8 @@ export default function MyWarehouse() {
                             <History size={14} /> История
                           </button>
                           <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {/* БЫСТРАЯ КНОПКА КОМПЛЕКТАЦИИ */}
+                            <button onClick={() => openKittingModal(item)} className="text-gray-400 hover:text-indigo-600 transition-colors" title="Скомплектовать наборы"><PackagePlus size={16}/></button>
                             <button onClick={() => openManualModal(item)} className="text-gray-400 hover:text-blue-600 transition-colors"><Edit3 size={16}/></button>
                             <button onClick={() => handleDelete(item.id)} className="text-gray-400 hover:text-red-600 transition-colors"><Trash2 size={16}/></button>
                           </div>
@@ -528,6 +558,71 @@ export default function MyWarehouse() {
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* МОДАЛЬНОЕ ОКНО КОМПЛЕКТАЦИИ (НОВОЕ) */}
+      {kittingItem && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
+            <div className="px-6 py-4 border-b border-indigo-100 flex justify-between items-center bg-indigo-50/80">
+              <h3 className="text-[16px] font-bold text-indigo-900 flex items-center gap-2">
+                <PackagePlus size={18} className="text-indigo-600"/> Комплектация товара
+              </h3>
+              <button onClick={() => setKittingItem(null)} className="p-1.5 text-indigo-400 hover:text-indigo-700 hover:bg-white rounded-lg transition-colors"><X size={20} /></button>
+            </div>
+            
+            <div className="p-6 space-y-5">
+              <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
+                <p className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1">Оригинальный товар</p>
+                <p className="text-[14px] font-bold text-gray-900 leading-snug">{kittingItem.title}</p>
+                <div className="flex gap-4 mt-2">
+                  <span className="text-[12px] font-medium text-gray-600">Опт: <b>{kittingItem.price} ₽</b></span>
+                  <span className="text-[12px] font-medium text-gray-600">Доступно: <b className="text-green-600">{kittingItem.quantity} шт</b></span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">В одном комплекте (ШТ)</label>
+                  <input type="number" min="1" value={kittingItemsPerKit} onChange={e => setKittingItemsPerKit(parseInt(e.target.value, 10) || 1)} className="w-full bg-white border border-indigo-200 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-indigo-900" />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Сколько наборов собрать</label>
+                  <input type="number" min="1" value={kittingCount} onChange={e => setKittingCount(parseInt(e.target.value, 10) || 1)} className="w-full bg-white border border-indigo-200 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-indigo-900" />
+                </div>
+              </div>
+              
+              <div className="pt-4 border-t border-gray-100">
+                <p className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-3">Итоговый результат</p>
+                <div className="space-y-2 text-[13px]">
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">Спишется оригинала:</span>
+                    <span className="font-bold text-red-600">-{kittingItemsPerKit * kittingCount} шт.</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-gray-600">Останется оригинала:</span>
+                    <span className="font-bold text-gray-900">{Math.max(0, kittingItem.quantity - (kittingItemsPerKit * kittingCount))} шт.</span>
+                  </div>
+                  <div className="mt-3 p-3 bg-indigo-50/50 border border-indigo-100 rounded-lg">
+                    <span className="block text-[10px] text-indigo-400 uppercase font-bold mb-1">Появится новый товар:</span>
+                    <span className="font-bold text-indigo-900 line-clamp-2">{kittingItem.title} ({kittingItemsPerKit} шт.)</span>
+                    <div className="flex gap-3 mt-1.5">
+                      <span className="text-[11px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">+{kittingCount} шт.</span>
+                      <span className="text-[11px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">Себестоимость: ~{kittingItem.price * kittingItemsPerKit} ₽</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3 flex-shrink-0">
+              <Button variant="outline" onClick={() => setKittingItem(null)}>Отмена</Button>
+              <Button onClick={handleSaveKitting} disabled={kittingItemsPerKit * kittingCount > kittingItem.quantity || kittingCount < 1}>
+                <PackagePlus size={16} /> Создать {kittingCount} наб.
+              </Button>
             </div>
           </div>
         </div>
@@ -595,9 +690,18 @@ export default function MyWarehouse() {
               </div>
             </div>
 
-            <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3 flex-shrink-0">
-              <Button variant="outline" onClick={() => setIsManualModalOpen(false)}>Отмена</Button>
-              <Button onClick={handleSaveManual}><Save size={16} /> Сохранить</Button>
+            <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-between gap-3 flex-shrink-0">
+              {/* КНОПКА КОМПЛЕКТАЦИИ ИЗ РЕДАКТИРОВАНИЯ */}
+              {editingItem.id ? (
+                <Button variant="outline" onClick={() => openKittingModal(editingItem as MyStockItem)} className="mr-auto text-indigo-600 border-indigo-200 hover:bg-indigo-50">
+                  <PackagePlus size={16} /> Скомплектовать
+                </Button>
+              ) : <div></div>}
+              
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setIsManualModalOpen(false)}>Отмена</Button>
+                <Button onClick={handleSaveManual}><Save size={16} /> Сохранить</Button>
+              </div>
             </div>
           </div>
         </div>

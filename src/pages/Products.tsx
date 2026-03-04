@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { RefreshCw, Edit3, X, Save, Plus, Trash2, PackageSearch, Copy, Check, FileUp, Link as LinkIcon, Unlink, Box } from 'lucide-react';
+import { RefreshCw, Edit3, X, Save, Plus, Trash2, PackageSearch, Copy, Check, FileUp, Link as LinkIcon, Box } from 'lucide-react';
 import { db, FbsStockItem } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { PageLayout, Toolbar, SearchInput, Button, TableWrapper, EmptyState } from '../components/ui';
@@ -17,7 +17,7 @@ export default function Products() {
   const savedProducts = useLiveQuery(() => db.fbsStocks.toArray()) || [];
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || []; // ОБНОВЛЕНО
 
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedBarcode, setCopiedBarcode] = useState<string | null>(null);
@@ -30,12 +30,17 @@ export default function Products() {
 
   const handleLink = async (myStockItemId: number) => {
     if (!linkingNmId) return;
-    await db.wbLinks.put({ nmId: linkingNmId, myStockItemId });
+    const existing = await db.wbLinksV2.where('nmId').equals(linkingNmId).toArray();
+    if (!existing.find((l: any) => l.myStockItemId === myStockItemId)) {
+      await db.wbLinksV2.add({ nmId: linkingNmId, myStockItemId });
+    }
     setLinkingNmId(null); setLinkSearch('');
   };
 
   const handleUnlink = async (nmId: number) => {
-    if (window.confirm('Отвязать этот товар от "Моего склада"?')) await db.wbLinks.where('nmId').equals(nmId).delete();
+    if (window.confirm('Отвязать этот товар от ВСЕХ позиций на "Моем складе"?')) {
+      await db.wbLinksV2.where('nmId').equals(nmId).delete();
+    }
   };
 
   const searchFilteredMyWarehouse = useMemo(() => {
@@ -223,9 +228,11 @@ export default function Products() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {processedProducts.map((product) => {
-                  const link = wbLinks.find(l => l.nmId === product.nmId);
-                  const linkedMyItem = link ? myWarehouse.find(m => m.id === link.myStockItemId) : null;
-                  const latestReceipt = linkedMyItem?.receipts && linkedMyItem.receipts.length > 0 ? linkedMyItem.receipts[linkedMyItem.receipts.length - 1] : null;
+                  const productLinks = wbLinks.filter((l: any) => l.nmId === product.nmId);
+                  const linkedItems = productLinks.map((l: any) => myWarehouse.find(m => m.id === l.myStockItemId)).filter(Boolean);
+                  const totalQty = linkedItems.reduce((sum, item) => sum + (item!.quantity || 0), 0);
+                  const firstLinkedItem = linkedItems[0];
+                  const latestReceipt = firstLinkedItem?.receipts && firstLinkedItem.receipts.length > 0 ? firstLinkedItem.receipts[firstLinkedItem.receipts.length - 1] : null;
 
                   return (
                     <tr key={product.id} className="hover:bg-gray-50/80 transition-colors bg-white group">
@@ -259,13 +266,14 @@ export default function Products() {
                       </td>
 
                       <td className="px-4 py-3 border-r border-gray-100 align-middle bg-indigo-50/10">
-                        {linkedMyItem ? (
+                        {linkedItems.length > 0 ? (
                           <div className="flex flex-col items-center justify-center gap-1">
-                            <div className="flex items-center gap-1.5" title={linkedMyItem.title}>
+                            <div className="flex items-center gap-1.5" title={linkedItems.map(i => i?.title).join('\n')}>
                               <Box size={12} className="text-indigo-400" />
-                              <span className={`text-[14px] font-bold ${linkedMyItem.quantity > 0 ? 'text-green-600' : 'text-red-500'}`}>Остаток: {linkedMyItem.quantity} шт</span>
+                              <span className={`text-[14px] font-bold ${totalQty > 0 ? 'text-green-600' : 'text-red-500'}`}>Остаток: {totalQty} шт</span>
                             </div>
-                            <button onClick={() => handleUnlink(product.nmId)} className="text-[10px] font-bold text-indigo-300 hover:text-red-500 transition-colors" title="Отвязать товар от склада">Отвязать</button>
+                            {linkedItems.length > 1 && <span className="text-[9px] text-gray-500 font-medium">({linkedItems.length} позиций на складе)</span>}
+                            <button onClick={() => handleUnlink(product.nmId)} className="text-[10px] font-bold text-indigo-300 hover:text-red-500 transition-colors mt-0.5" title="Отвязать товар от склада">Отвязать</button>
                           </div>
                         ) : (
                           <div className="flex justify-center">
@@ -278,7 +286,7 @@ export default function Products() {
 
                       <td className="px-4 py-3 text-right align-middle">
                         <div className="flex items-center justify-end gap-3">
-                          {linkedMyItem ? (
+                          {linkedItems.length > 0 ? (
                             <div className="flex flex-col items-end gap-1">
                               <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 flex items-center gap-1"><LinkIcon size={8} /> Синхронизировано со складом (FIFO)</span>
                               {latestReceipt ? (
@@ -287,7 +295,7 @@ export default function Products() {
                                   <span className="text-[14px] font-bold text-[#1e3a5f] bg-indigo-50/50 border border-indigo-100 px-2 py-0.5 rounded shadow-sm text-center">{latestReceipt.price} ₽</span>
                                 </div>
                               ) : (
-                                <span className="text-[14px] font-bold text-[#1e3a5f] bg-indigo-50/50 border border-indigo-100 px-2 py-0.5 rounded shadow-sm text-center">{linkedMyItem.price} ₽</span>
+                                <span className="text-[14px] font-bold text-[#1e3a5f] bg-indigo-50/50 border border-indigo-100 px-2 py-0.5 rounded shadow-sm text-center">{firstLinkedItem?.price} ₽</span>
                               )}
                             </div>
                           ) : (

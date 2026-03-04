@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
-import { RefreshCw, Package, Truck, Clock, Box, CheckCircle2, MinusCircle, ListChecks, LinkIcon, AlertTriangle } from 'lucide-react';
-import { db } from '../db';
+import { RefreshCw, Package, Truck, Clock, Box, CheckCircle2, MinusCircle, ListChecks, LinkIcon, AlertTriangle, Layers } from 'lucide-react';
+import { db, MyStockItem } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { PageLayout, Toolbar, Button, TableWrapper, SearchInput } from '../components/ui';
 
@@ -19,36 +19,39 @@ export default function WbSupplies() {
   const supplies = useLiveQuery(() => db.wbSupplies.orderBy('createdAt').reverse().toArray()) || [];
   const orders = useLiveQuery(() => db.wbOrders.toArray()) || [];
   
-  // Подтягиваем данные для связей
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || []; // Используем новую БД
   
   const [isLoading, setIsLoading] = useState(false);
   const [selectedSupplyId, setSelectedSupplyId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  
   const [tab, setTab] = useState<'active' | 'archive'>('active');
 
-  // Вспомогательная функция: Найти товар на складе по связи (nmId) ИЛИ по названию
-  const getMatchedWarehouseItem = (order: any) => {
-    // 1. Ищем через жесткую связь
+  const getMatchedWarehouseItems = (order: any): MyStockItem[] => {
+    let matches: MyStockItem[] = [];
+    
     if (order.nmId) {
-      const link = wbLinks.find(l => l.nmId === order.nmId);
-      if (link) {
+      const links = wbLinks.filter(l => l.nmId === order.nmId);
+      for (const link of links) {
         const found = myWarehouse.find(m => m.id === link.myStockItemId);
-        if (found) return found;
+        if (found) matches.push(found);
       }
     }
-    // 2. Ищем по совпадению названия или артикула
-    return myWarehouse.find(i => 
-      i.title.toLowerCase().trim() === (order.title || '').toLowerCase().trim() || 
-      (i.article && i.article === order.article)
-    );
+    
+    if (matches.length === 0) {
+      matches = myWarehouse.filter(i => 
+        i.title.toLowerCase().trim() === (order.title || '').toLowerCase().trim() || 
+        (i.article && i.article === order.article)
+      );
+    }
+    
+    return matches.sort((a, b) => {
+      const dateA = a.receipts && a.receipts.length > 0 ? new Date(a.receipts[0].date).getTime() : (a.id || 0);
+      const dateB = b.receipts && b.receipts.length > 0 ? new Date(b.receipts[0].date).getTime() : (b.id || 0);
+      return dateA - dateB;
+    });
   };
 
-  // =================================================================
-  // 1. УМНАЯ СИНХРОНИЗАЦИЯ С ПАГИНАЦИЕЙ
-  // =================================================================
   const handleRefresh = async () => {
     if (!API_KEY) return alert('API Ключ "Маркетплейс" не указан в файле .env');
     setIsLoading(true);
@@ -123,7 +126,7 @@ export default function WbSupplies() {
           id: o.id, 
           supplyId: o.supplyId, 
           article: o.article,
-          nmId: o.nmId, // Сохраняем nmId с WB для связей
+          nmId: o.nmId,
           title: String(o.title || '').substring(0, 100),
           price: o.convertedPrice ? o.convertedPrice / 100 : 0,
           supplierStatus: o.supplierStatus, 
@@ -136,26 +139,28 @@ export default function WbSupplies() {
     finally { setIsLoading(false); }
   };
 
-  // =================================================================
-  // 2. ЕДИНИЧНОЕ СПИСАНИЕ
-  // =================================================================
   const handleDeductFromWarehouse = async (order: any) => {
-    const match = getMatchedWarehouseItem(order);
+    const matches = getMatchedWarehouseItems(order);
 
-    if (!match) return alert(`Товар "${order.title}" не привязан и не найден на Вашем складе по названию! Перейдите в раздел "Остатки (FBS)" и привяжите его.`);
-    if (match.quantity <= 0 && !window.confirm(`Остаток товара "${match.title}" на складе уже равен 0.\nВсё равно списать?`)) return;
+    if (matches.length === 0) {
+      return alert(`Товар "${order.title}" не привязан и не найден на Вашем складе! Перейдите в раздел "Мой Склад" и привяжите его карточке WB.`);
+    }
+
+    let itemToDeduct = matches.find(m => m.quantity > 0);
+    
+    if (!itemToDeduct) {
+      itemToDeduct = matches[0];
+      if (!window.confirm(`Общий остаток товара "${itemToDeduct.title}" (и всех связанных партий) на складе уже равен 0.\nВсё равно списать (уйдет в минус)?`)) return;
+    }
 
     await db.transaction('rw', db.myWarehouse, db.myWarehouseChanges, db.wbOrders, async () => {
-      const newQty = match.quantity - 1;
-      await db.myWarehouse.update(match.id!, { quantity: newQty });
-      await db.myWarehouseChanges.add({ itemId: match.id, title: match.title, field: 'Остаток (Отгрузка WB)', oldValue: String(match.quantity), newValue: String(newQty), changeDate: new Date().toISOString() });
+      const newQty = itemToDeduct.quantity - 1;
+      await db.myWarehouse.update(itemToDeduct.id!, { quantity: newQty });
+      await db.myWarehouseChanges.add({ itemId: itemToDeduct.id, title: itemToDeduct.title, field: 'Остаток (Отгрузка WB)', oldValue: String(itemToDeduct.quantity), newValue: String(newQty), changeDate: new Date().toISOString() });
       await db.wbOrders.update(order.id, { localDeducted: true } as any);
     });
   };
 
-  // =================================================================
-  // 3. МАССОВОЕ СПИСАНИЕ ВСЕЙ ПОСТАВКИ
-  // =================================================================
   const handleBulkDeduct = async () => {
     if (!selectedSupplyId) return;
     
@@ -165,48 +170,55 @@ export default function WbSupplies() {
       return alert('В этой поставке нет товаров, которые нужно списать (или все уже списаны).');
     }
 
-    if (!window.confirm(`Вы собираетесь массово списать с Вашего склада ${supplyOrders.length} шт. товаров.\nПродолжить?`)) return;
+    if (!window.confirm(`Массовое списание ${supplyOrders.length} шт. товаров.\nБудет использован метод FIFO (сначала списываются старые партии).\nПродолжить?`)) return;
 
-    const updates = new Map();
+    const localStock = new Map(myWarehouse.map(m => [m.id, m.quantity]));
+    
+    const logs: any[] = [];
     const ordersToUpdate: number[] = [];
     const notFound: string[] = [];
+    
+    const now = new Date().toISOString();
 
-    // Собираем агрегированные данные
     for (const order of supplyOrders) {
-      const match = getMatchedWarehouseItem(order);
-
-      if (match) {
-        if (!updates.has(match.id)) {
-          updates.set(match.id, { originalQty: match.quantity, title: match.title, deductCount: 0 });
-        }
-        updates.get(match.id).deductCount += 1;
-        ordersToUpdate.push(order.id);
-      } else {
+      const matches = getMatchedWarehouseItems(order);
+      
+      if (matches.length === 0) {
         notFound.push(order.title || order.article);
+        continue;
       }
+
+      let targetItem = matches.find(m => (localStock.get(m.id!) || 0) > 0);
+      
+      if (!targetItem) targetItem = matches[0];
+
+      const currentQty = localStock.get(targetItem.id!) || 0;
+      const newQty = currentQty - 1;
+      
+      localStock.set(targetItem.id!, newQty);
+      
+      logs.push({
+        itemId: targetItem.id,
+        title: targetItem.title,
+        field: `Массовое списание (WB)`,
+        oldValue: String(currentQty),
+        newValue: String(newQty),
+        changeDate: now
+      });
+      
+      ordersToUpdate.push(order.id);
     }
 
     if (ordersToUpdate.length === 0) {
-      return alert(`Ни один из ${supplyOrders.length} товаров не найден на Вашем складе. Привяжите их в разделе "Остатки (FBS)".`);
+      return alert(`Ни один из ${supplyOrders.length} товаров не найден на Вашем складе.`);
     }
 
-    // Применяем изменения
     await db.transaction('rw', db.myWarehouse, db.myWarehouseChanges, db.wbOrders, async () => {
-      const now = new Date().toISOString();
-      const logs = [];
-      
-      for (const [itemId, data] of updates.entries()) {
-        const newQty = data.originalQty - data.deductCount;
-        await db.myWarehouse.update(itemId, { quantity: newQty });
-        
-        logs.push({
-          itemId: itemId,
-          title: data.title,
-          field: `Массовое списание (WB)`,
-          oldValue: String(data.originalQty),
-          newValue: String(newQty),
-          changeDate: now
-        });
+      for (const [itemId, finalQty] of localStock.entries()) {
+        const originalItem = myWarehouse.find(m => m.id === itemId);
+        if (originalItem && originalItem.quantity !== finalQty) {
+          await db.myWarehouse.update(itemId, { quantity: finalQty });
+        }
       }
       
       if (logs.length > 0) await db.myWarehouseChanges.bulkAdd(logs);
@@ -224,10 +236,6 @@ export default function WbSupplies() {
     alert(msg);
   };
 
-  // =================================================================
-  // 4. ПОДГОТОВКА ДАННЫХ ДЛЯ ИНТЕРФЕЙСА
-  // =================================================================
-  
   const activeSupplies = useMemo(() => {
     return supplies.filter(s => {
       const supplyOrders = orders.filter(o => o.supplyId === s.id);
@@ -263,7 +271,7 @@ export default function WbSupplies() {
       </Toolbar>
 
       <div className="flex flex-1 overflow-hidden gap-4 h-full">
-        {/* ЛЕВАЯ КОЛОНКА: СПИСОК ПОСТАВОК */}
+        {/* ЛЕВАЯ КОЛОНКА */}
         <div className="w-1/3 bg-white border border-gray-200 rounded-2xl shadow-sm flex flex-col overflow-hidden">
           
           <div className="flex bg-gray-100 p-1.5 m-4 mb-2 rounded-xl">
@@ -330,7 +338,7 @@ export default function WbSupplies() {
           </div>
         </div>
 
-        {/* ПРАВАЯ КОЛОНКА: СПИСОК ТОВАРОВ В ПОСТАВКЕ */}
+        {/* ПРАВАЯ КОЛОНКА */}
         <div className="w-2/3 bg-white border border-gray-200 rounded-2xl shadow-sm flex flex-col overflow-hidden">
           {!selectedSupplyId ? (
             <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
@@ -349,7 +357,6 @@ export default function WbSupplies() {
                 </div>
                 
                 <div className="flex items-center gap-3">
-                  {/* КНОПКА МАССОВОГО СПИСАНИЯ */}
                   <Button variant="outline" onClick={handleBulkDeduct} disabled={displayOrders.filter(o => !(o as any).localDeducted).length === 0}>
                     <ListChecks size={16} className="text-blue-600" /> 
                     Списать все остатки
@@ -381,7 +388,7 @@ export default function WbSupplies() {
                     ) : (
                       displayOrders.map((order: any) => {
                         const statusConfig = STATUS_MAP[order.supplierStatus || ''] || { text: order.supplierStatus || 'Неизвестно', color: 'bg-gray-100 text-gray-600 border-gray-200' };
-                        const matchedItem = getMatchedWarehouseItem(order);
+                        const matchedItems = getMatchedWarehouseItems(order);
 
                         return (
                           <tr key={order.id} className="hover:bg-gray-50 transition-colors">
@@ -389,14 +396,14 @@ export default function WbSupplies() {
                               <p className="text-[13px] font-bold text-gray-800 leading-snug line-clamp-2">{order.title || 'Без названия'}</p>
                               <p className="text-[11px] text-gray-400 mt-1">Арт: {order.article} {order.nmId ? `| ID: ${order.nmId}` : ''}</p>
                               
-                              {/* ИНДИКАТОР ПРИВЯЗКИ */}
                               <div className="mt-2">
-                                {matchedItem ? (
+                                {matchedItems.length > 0 ? (
                                   <span className="text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 px-1.5 py-0.5 rounded flex items-center gap-1 w-max" title="Будет списано со склада">
-                                    <LinkIcon size={10} /> Склад: {matchedItem.title}
+                                    {matchedItems.length > 1 ? <Layers size={10} /> : <LinkIcon size={10} />} 
+                                    Склад: {matchedItems.length > 1 ? `Связан с ${matchedItems.length} товарами (FIFO)` : matchedItems[0].title}
                                   </span>
                                 ) : (
-                                  <span className="text-[10px] font-bold bg-red-50 text-red-600 border border-red-100 px-1.5 py-0.5 rounded flex items-center gap-1 w-max" title="Привяжите товар в разделе 'Остатки (FBS)'">
+                                  <span className="text-[10px] font-bold bg-red-50 text-red-600 border border-red-100 px-1.5 py-0.5 rounded flex items-center gap-1 w-max" title="Привяжите товар в разделе 'Мой Склад'">
                                     <AlertTriangle size={10} /> Не найден на складе
                                   </span>
                                 )}
