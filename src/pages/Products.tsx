@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { RefreshCw, Edit3, X, Save, Plus, Trash2, PackageSearch, Copy, Check, FileUp } from 'lucide-react';
+import { RefreshCw, Edit3, X, Save, Plus, Trash2, PackageSearch, Copy, Check, FileUp, Link as LinkIcon, Unlink, Box } from 'lucide-react';
 import { db, FbsStockItem } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 
@@ -24,11 +24,44 @@ export default function Products() {
   const savedProducts = useLiveQuery(() => db.fbsStocks.toArray()) || [];
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
 
+  // НОВОЕ: Подтягиваем данные Моего склада и Связей
+  const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedBarcode, setCopiedBarcode] = useState<string | null>(null);
   
   const [editingProduct, setEditingProduct] = useState<FbsStockItem | null>(null);
   const [modalPrices, setModalPrices] = useState<PricePeriod[]>([]);
+
+  // НОВОЕ: Состояния для модалки привязки ВБ -> Склад
+  const [linkingNmId, setLinkingNmId] = useState<number | null>(null);
+  const [linkSearch, setLinkSearch] = useState('');
+
+  // ==========================================
+  // ЛОГИКА СВЯЗЫВАНИЯ
+  // ==========================================
+  const handleLink = async (myStockItemId: number) => {
+    if (!linkingNmId) return;
+    await db.wbLinks.put({ nmId: linkingNmId, myStockItemId });
+    setLinkingNmId(null);
+    setLinkSearch('');
+  };
+
+  const handleUnlink = async (nmId: number) => {
+    if (window.confirm('Отвязать этот товар от "Моего склада"?')) {
+      await db.wbLinks.where('nmId').equals(nmId).delete();
+    }
+  };
+
+  const searchFilteredMyWarehouse = useMemo(() => {
+    if (!linkSearch) return myWarehouse;
+    const q = linkSearch.toLowerCase();
+    return myWarehouse.filter(m => 
+      m.title.toLowerCase().includes(q) || 
+      (m.category && m.category.toLowerCase().includes(q))
+    );
+  }, [myWarehouse, linkSearch]);
 
   // ==========================================
   // ПОИСК, ФИЛЬТРАЦИЯ И СОРТИРОВКА
@@ -265,7 +298,7 @@ export default function Products() {
       {/* ПАНЕЛЬ УПРАВЛЕНИЯ (ИЗ UI KIT) */}
       <Toolbar>
         <div className="flex items-center gap-4">
-          <h1 className="text-[16px] font-bold text-[#1e3a5f] pr-4 border-r border-gray-200 uppercase tracking-wider">Каталог и Цены</h1>
+          <h1 className="text-[16px] font-bold text-[#1e3a5f] pr-4 border-r border-gray-200 uppercase tracking-wider">Остатки и Цены (FBS)</h1>
           <SearchInput value={searchQuery} onChange={setSearchQuery} placeholder="Поиск по названию или артикулу..." />
         </div>
         
@@ -293,99 +326,191 @@ export default function Products() {
                 <tr className="text-[11px] uppercase tracking-wider text-gray-500 font-bold bg-gray-50 border-b border-gray-200">
                   <th className="px-4 py-2.5 sticky left-0 bg-gray-50 z-30 shadow-[1px_0_0_0_#e5e7eb]">Товар (Фото и Артикул)</th>
                   <th className="px-4 py-2.5 border-r border-gray-100 w-32">Баркоды</th>
-                  <th className="px-4 py-2.5 border-r border-gray-100 text-center w-24">Остаток</th>
+                  <th className="px-4 py-2.5 border-r border-gray-100 text-center w-24">Остаток WB</th>
+                  {/* НОВЫЕ КОЛОНКИ */}
+                  <th className="px-4 py-2.5 border-r border-gray-100 text-center w-24 text-indigo-700">Мой Склад</th>
+                  <th className="px-4 py-2.5 border-r border-gray-100 w-40 text-center">Связь</th>
+                  
                   <th className="px-4 py-2.5 text-right w-[280px]">Себестоимость</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {processedProducts.map((product) => (
-                  <tr key={product.id} className="hover:bg-gray-50/80 transition-colors bg-white group">
-                    
-                    {/* Товар: Фото + Название + Цвет + Размер */}
-                    <td className="px-4 py-3 sticky left-0 bg-white group-hover:bg-gray-50/80 z-10 shadow-[1px_0_0_0_#f3f4f6] whitespace-normal min-w-[320px] max-w-[420px]">
-                      <div className="flex items-center gap-3">
-                        {product.photo ? (
-                          <img src={product.photo} alt="img" className="w-[44px] h-[58px] object-cover rounded shadow-sm border border-gray-200 flex-shrink-0" />
-                        ) : (
-                          <div className="w-[44px] h-[58px] bg-gray-50 rounded flex items-center justify-center text-[9px] text-gray-400 font-medium flex-shrink-0 border border-gray-100">Нет</div>
-                        )}
-                        <div className="flex flex-col justify-center">
-                          <h3 className="text-[13px] font-bold text-[#1e3a5f] leading-tight line-clamp-2">{product.title}</h3>
-                          <div className="flex flex-wrap items-center gap-2 mt-1.5">
-                            <span className="text-[12px] text-gray-500 font-medium">Арт: {product.vendorCode}</span>
-                            {product.color && (
-                              <span className="bg-[#8ba5ca]/15 text-[#5a769a] px-1.5 py-0.5 rounded text-[10px] font-bold border border-[#8ba5ca]/20">
-                                {product.color}
-                              </span>
-                            )}
-                            {product.techSize && product.techSize !== '0' && (
-                              <span className="bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded text-[10px] font-bold border border-gray-200">
-                                Разм: {product.techSize}
-                              </span>
-                            )}
+                {processedProducts.map((product) => {
+                  // НОВОЕ: Ищем привязанный товар склада
+                  const link = wbLinks.find(l => l.nmId === product.nmId);
+                  const linkedMyItem = link ? myWarehouse.find(m => m.id === link.myStockItemId) : null;
+
+                  return (
+                    <tr key={product.id} className="hover:bg-gray-50/80 transition-colors bg-white group">
+                      
+                      {/* Товар: Фото + Название + Цвет + Размер */}
+                      <td className="px-4 py-3 sticky left-0 bg-white group-hover:bg-gray-50/80 z-10 shadow-[1px_0_0_0_#f3f4f6] whitespace-normal min-w-[320px] max-w-[420px]">
+                        <div className="flex items-center gap-3">
+                          {product.photo ? (
+                            <img src={product.photo} alt="img" className="w-[44px] h-[58px] object-cover rounded shadow-sm border border-gray-200 flex-shrink-0" />
+                          ) : (
+                            <div className="w-[44px] h-[58px] bg-gray-50 rounded flex items-center justify-center text-[9px] text-gray-400 font-medium flex-shrink-0 border border-gray-100">Нет</div>
+                          )}
+                          <div className="flex flex-col justify-center">
+                            <h3 className="text-[13px] font-bold text-[#1e3a5f] leading-tight line-clamp-2">{product.title}</h3>
+                            <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                              <span className="text-[12px] text-gray-500 font-medium">Арт: {product.vendorCode}</span>
+                              {product.color && (
+                                <span className="bg-[#8ba5ca]/15 text-[#5a769a] px-1.5 py-0.5 rounded text-[10px] font-bold border border-[#8ba5ca]/20">
+                                  {product.color}
+                                </span>
+                              )}
+                              {product.techSize && product.techSize !== '0' && (
+                                <span className="bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded text-[10px] font-bold border border-gray-200">
+                                  Разм: {product.techSize}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    {/* Баркоды */}
-                    <td className="px-4 py-3 border-r border-gray-100 align-middle">
-                      <div className="flex flex-col gap-1.5 w-max">
-                        {product.barcodes.map((b: string) => (
-                          <div key={b} onClick={() => handleCopy(b)} className="flex items-center gap-2 group/copy cursor-pointer">
-                            <span className="text-[13px] font-medium text-[#1e3a5f] tracking-wide">{b}</span>
-                            {copiedBarcode === b ? (
-                              <Check size={14} className="text-green-500" />
-                            ) : (
-                              <Copy size={14} className="text-gray-300 group-hover/copy:text-blue-500 transition-colors" />
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </td>
+                      {/* Баркоды */}
+                      <td className="px-4 py-3 border-r border-gray-100 align-middle">
+                        <div className="flex flex-col gap-1.5 w-max">
+                          {product.barcodes.map((b: string) => (
+                            <div key={b} onClick={() => handleCopy(b)} className="flex items-center gap-2 group/copy cursor-pointer">
+                              <span className="text-[13px] font-medium text-[#1e3a5f] tracking-wide">{b}</span>
+                              {copiedBarcode === b ? (
+                                <Check size={14} className="text-green-500" />
+                              ) : (
+                                <Copy size={14} className="text-gray-300 group-hover/copy:text-blue-500 transition-colors" />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </td>
 
-                    {/* Остаток */}
-                    <td className="px-4 py-3 border-r border-gray-100 text-center align-middle">
-                       <div className="inline-flex items-center justify-center min-w-[36px] h-[28px] px-2 bg-gray-50 border border-gray-200 rounded-md text-[13px] font-bold text-gray-800 shadow-sm">
-                          {product.totalAmount}
-                       </div>
-                    </td>
+                      {/* Остаток WB */}
+                      <td className="px-4 py-3 border-r border-gray-100 text-center align-middle">
+                         <div className="inline-flex items-center justify-center min-w-[36px] h-[28px] px-2 bg-gray-50 border border-gray-200 rounded-md text-[13px] font-bold text-gray-800 shadow-sm">
+                            {product.totalAmount}
+                         </div>
+                      </td>
 
-                    {/* История себестоимости */}
-                    <td className="px-4 py-3 text-right align-middle">
-                      <div className="flex items-center justify-end gap-3">
-                        {product.prices.length > 0 ? (
-                          <div className="flex flex-col gap-1.5 items-end">
-                            {product.prices.map((p: any, idx: number) => (
-                              <div key={idx} className="flex items-center gap-2">
-                                <span className="text-[11px] font-medium text-gray-500 bg-gray-50 border border-gray-100 px-1.5 py-0.5 rounded">
-                                  {p.startDate ? new Date(p.startDate).toLocaleDateString('ru-RU') : '...'} — {p.endDate ? new Date(p.endDate).toLocaleDateString('ru-RU') : '∞'}
-                                </span>
-                                <span className="text-[13px] font-bold text-[#1e3a5f] bg-blue-50/50 border border-blue-100 px-2 py-0.5 rounded shadow-sm w-[70px] text-center">
-                                  {p.price} ₽
-                                </span>
-                              </div>
-                            ))}
+                      {/* НОВОЕ: Остаток Мой Склад (НЕ ПЛЮСУЕТСЯ К ИТОГО) */}
+                      <td className="px-4 py-3 border-r border-gray-100 text-center align-middle">
+                        {linkedMyItem ? (
+                          <div className={`inline-flex items-center justify-center min-w-[36px] h-[28px] px-2 rounded-md text-[13px] font-bold shadow-sm ${linkedMyItem.quantity > 0 ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+                            {linkedMyItem.quantity}
                           </div>
                         ) : (
-                          <span className="text-[12px] text-gray-400 italic mr-2">Не указана</span>
+                          <span className="text-[12px] text-gray-300 font-bold">—</span>
                         )}
-                        
-                        <Button variant="outline" onClick={() => openEditModal(product)} className="!p-2">
-                           <Edit3 size={16} />
-                        </Button>
-                      </div>
-                    </td>
+                      </td>
 
-                  </tr>
-                ))}
+                      {/* НОВОЕ: Кнопка Связи */}
+                      <td className="px-4 py-3 border-r border-gray-100 align-middle">
+                        {linkedMyItem ? (
+                          <div className="flex items-center justify-between gap-2 px-2 py-1.5 bg-indigo-50/80 rounded-lg border border-indigo-100">
+                            <span className="text-[11px] text-indigo-900 font-bold leading-tight line-clamp-2 max-w-[120px]" title={linkedMyItem.title}>
+                              {linkedMyItem.title}
+                            </span>
+                            <button onClick={() => handleUnlink(product.nmId)} className="text-indigo-300 hover:text-red-500 transition-colors p-1 bg-white rounded-md shadow-sm border border-indigo-50" title="Удалить связь">
+                              <Unlink size={14} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex justify-center">
+                            <button onClick={() => setLinkingNmId(product.nmId)} className="inline-flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-bold text-gray-500 bg-white hover:text-blue-600 hover:bg-blue-50 border border-gray-200 hover:border-blue-300 rounded-lg transition-all shadow-sm opacity-60 group-hover:opacity-100">
+                              <LinkIcon size={12} /> Привязать
+                            </button>
+                          </div>
+                        )}
+                      </td>
+
+                      {/* История себестоимости */}
+                      <td className="px-4 py-3 text-right align-middle">
+                        <div className="flex items-center justify-end gap-3">
+                          {product.prices.length > 0 ? (
+                            <div className="flex flex-col gap-1.5 items-end">
+                              {product.prices.map((p: any, idx: number) => (
+                                <div key={idx} className="flex items-center gap-2">
+                                  <span className="text-[11px] font-medium text-gray-500 bg-gray-50 border border-gray-100 px-1.5 py-0.5 rounded">
+                                    {p.startDate ? new Date(p.startDate).toLocaleDateString('ru-RU') : '...'} — {p.endDate ? new Date(p.endDate).toLocaleDateString('ru-RU') : '∞'}
+                                  </span>
+                                  <span className="text-[13px] font-bold text-[#1e3a5f] bg-blue-50/50 border border-blue-100 px-2 py-0.5 rounded shadow-sm w-[70px] text-center">
+                                    {p.price} ₽
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-[12px] text-gray-400 italic mr-2">Не указана</span>
+                          )}
+                          
+                          <Button variant="outline" onClick={() => openEditModal(product)} className="!p-2">
+                             <Edit3 size={16} />
+                          </Button>
+                        </div>
+                      </td>
+
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </TableWrapper>
 
-      {/* МОДАЛЬНОЕ ОКНО РЕДАКТИРОВАНИЯ */}
+      {/* НОВОЕ: МОДАЛЬНОЕ ОКНО ПОИСКА ПО МОЕМУ СКЛАДУ ДЛЯ ПРИВЯЗКИ */}
+      {linkingNmId && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col h-[70vh] animate-in fade-in zoom-in duration-200">
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-blue-50/50">
+              <div>
+                <h3 className="text-[16px] font-bold text-[#1e3a5f] flex items-center gap-2">
+                  <LinkIcon size={18} className="text-blue-500" /> Связь с Моим складом
+                </h3>
+                <p className="text-[12px] text-gray-500 mt-1">Выберите товар из вашей базы для привязки</p>
+              </div>
+              <button onClick={() => {setLinkingNmId(null); setLinkSearch('');}} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-white rounded-lg transition-colors shadow-sm border border-transparent hover:border-gray-200"><X size={20} /></button>
+            </div>
+            
+            <div className="p-4 border-b border-gray-100 bg-white">
+               <SearchInput value={linkSearch} onChange={setLinkSearch} placeholder="Поиск по Моему складу..." />
+            </div>
+
+            <div className="overflow-y-auto flex-1 p-2 space-y-1 bg-gray-50/50">
+              {searchFilteredMyWarehouse.length === 0 ? (
+                <div className="text-center p-8 text-gray-400 text-[13px]">
+                  <Box size={32} className="mx-auto mb-2 opacity-50" />
+                  Товары не найдены. <br/>Сначала добавьте их в разделе "Мой Склад".
+                </div>
+              ) : (
+                searchFilteredMyWarehouse.map(mItem => (
+                  <div 
+                    key={mItem.id}
+                    onClick={() => handleLink(mItem.id!)}
+                    className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-xl cursor-pointer hover:border-blue-300 hover:bg-blue-50 transition-all shadow-sm"
+                  >
+                    <div className="flex flex-col pr-4">
+                      <span className="text-[13px] font-bold text-gray-800 leading-snug">{mItem.title}</span>
+                      <span className="text-[11px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded mt-1.5 inline-block w-max">
+                        {mItem.category || 'Без категории'}
+                      </span>
+                    </div>
+                    <div className="flex flex-col items-end flex-shrink-0">
+                      <span className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Остаток</span>
+                      <span className={`text-[14px] font-black ${mItem.quantity > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                        {mItem.quantity} шт
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* МОДАЛЬНОЕ ОКНО РЕДАКТИРОВАНИЯ (БЕЗ ИЗМЕНЕНИЙ) */}
       {editingProduct && (
         <div className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200">

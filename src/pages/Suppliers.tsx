@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
-import { Plus, Edit3, Trash2, X, Save, RefreshCw, FileSpreadsheet, Layers, Wand2, PackageSearch } from 'lucide-react';
+import { Plus, Edit3, Trash2, X, Save, RefreshCw, FileSpreadsheet, Layers, Wand2, PackageSearch, TrendingUp, TrendingDown } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { db, Supplier, SupplierSheetMapping, MyStockItem } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -88,7 +88,7 @@ function parseStockBadge(val: any): { text: string, color: string, isOutOfStock:
 }
 
 // =================================================================
-// ПАРСИНГ ДАННЫХ ИЗ ЛИСТА С УМНЫМ ПОИСКОМ КАТЕГОРИЙ
+// ПАРСИНГ ДАННЫХ ИЗ ЛИСТА
 // =================================================================
 const parseSheetData = (sheet: XLSX.WorkSheet, map: ExtendedMapping) => {
   const parsedRows: any[] = [];
@@ -144,8 +144,14 @@ const parseSheetData = (sheet: XLSX.WorkSheet, map: ExtendedMapping) => {
 };
 
 // =================================================================
-// РАСЧЕТ И ЗАПИСЬ ИЗМЕНЕНИЙ В ЛОГ (ДЛЯ ИСТОРИИ)
+// РАСЧЕТ И ЗАПИСЬ ИЗМЕНЕНИЙ В ЛОГ (С ДОБАВЛЕНИЕМ ТРЕНДОВ)
 // =================================================================
+const extractNumber = (val: string) => {
+  if (!val) return 0;
+  const num = parseFloat(String(val).replace(/,/g, '.').replace(/[^\d.-]/g, ''));
+  return isNaN(num) ? 0 : num;
+};
+
 async function calculateAndSaveDiffs(supplierId: number, supplierName: string, oldData: any[], newData: any[]) {
   if (!oldData || oldData.length === 0) return; 
   
@@ -165,6 +171,8 @@ async function calculateAndSaveDiffs(supplierId: number, supplierName: string, o
       const key = `${newItem.sheetName}|${newItem.category}|${newItem.title}`.toLowerCase();
       const oldItem = oldMap.get(key);
 
+      newItem.trends = {};
+
       if (oldItem) {
         const checkField = (fieldKey: string, fieldLabel: string) => {
           const oldVal = String(oldItem[fieldKey] || '').trim();
@@ -175,12 +183,22 @@ async function calculateAndSaveDiffs(supplierId: number, supplierName: string, o
               category: newItem.category, title: newItem.title,
               field: fieldLabel, oldValue: oldVal, newValue: newVal, changeDate: now
             });
+            
+            // Расчет направления тренда для отображения в таблице
+            const oldNum = extractNumber(oldVal);
+            const newNum = extractNumber(newVal);
+            if (newNum > oldNum) newItem.trends[fieldKey] = 'up';
+            else if (newNum < oldNum) newItem.trends[fieldKey] = 'down';
+            else newItem.trends[fieldKey] = 'changed';
           }
         };
 
         checkField('wholesale', 'Опт');
         checkField('rrc', 'РРЦ');
         checkField('stock', 'Остаток');
+      } else {
+        // Товар не найден в старом прайсе = Новинка
+        newItem.isNew = true;
       }
     }
   });
@@ -193,6 +211,21 @@ async function calculateAndSaveDiffs(supplierId: number, supplierName: string, o
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
   await db.supplierChanges.where('changeDate').below(sevenDaysAgo.toISOString()).delete();
 }
+
+// Отрисовка стрелочки тренда
+const renderTrend = (trend: string, isPrice: boolean) => {
+  if (trend === 'up') {
+    return isPrice 
+      ? <TrendingUp size={14} className="text-red-500 inline-block ml-1.5 mb-0.5" /> 
+      : <TrendingUp size={14} className="text-green-500 inline-block ml-1.5 mb-0.5" />;
+  }
+  if (trend === 'down') {
+    return isPrice 
+      ? <TrendingDown size={14} className="text-green-500 inline-block ml-1.5 mb-0.5" /> 
+      : <TrendingDown size={14} className="text-red-500 inline-block ml-1.5 mb-0.5" />;
+  }
+  return null;
+};
 
 export default function Suppliers() {
   const suppliers = useLiveQuery(() => db.suppliers.toArray()) || [];
@@ -541,21 +574,31 @@ export default function Suppliers() {
                       
                       const stockInfo = parseStockBadge(row.stock);
                       
+                      // Настройки стилей для новинок
+                      const rowBg = row.isNew ? 'bg-green-50/60' : 'bg-white';
+                      const stickyBg = row.isNew ? '#f0fdf4' : '#ffffff';
+                      
                       return (
-                        <tr key={`item-${idx}`} className={`hover:bg-gray-50 transition-colors bg-white group ${stockInfo.isOutOfStock ? 'opacity-50 grayscale-[20%]' : ''}`}>
-                          <td className="px-5 py-3 sticky left-0 bg-white shadow-[1px_0_0_0_#f3f4f6] whitespace-normal break-words">
-                            <p className="text-[13px] font-bold text-[#1e3a5f] leading-snug line-clamp-3">{row.title}</p>
+                        <tr key={`item-${idx}`} className={`hover:bg-gray-50 transition-colors group ${rowBg} ${stockInfo.isOutOfStock && !row.isNew ? 'opacity-50 grayscale-[20%]' : ''}`}>
+                          <td className="px-5 py-3 sticky left-0 shadow-[1px_0_0_0_#f3f4f6] whitespace-normal break-words z-10" style={{ backgroundColor: stickyBg }}>
+                            <div className="flex flex-col">
+                              {row.isNew && <span className="inline-block w-max px-1.5 py-0.5 bg-green-100 text-green-700 text-[9px] font-black uppercase tracking-widest rounded mb-1 border border-green-200">Новинка</span>}
+                              <p className="text-[13px] font-bold text-[#1e3a5f] leading-snug line-clamp-3">{row.title}</p>
+                            </div>
                           </td>
-                          <td className="px-4 py-3 text-right font-bold text-gray-800 border-r border-gray-100 truncate">
+                          <td className="px-4 py-3 text-right font-bold text-gray-800 border-r border-gray-100 truncate whitespace-nowrap">
                             {row.wholesale ? `${row.wholesale}` : '—'}
+                            {row.trends && renderTrend(row.trends.wholesale, true)}
                           </td>
-                          <td className="px-4 py-3 text-right font-bold text-gray-800 border-r border-gray-100 truncate">
+                          <td className="px-4 py-3 text-right font-bold text-gray-800 border-r border-gray-100 truncate whitespace-nowrap">
                             {row.rrc ? `${row.rrc}` : '—'}
+                            {row.trends && renderTrend(row.trends.rrc, true)}
                           </td>
-                          <td className="px-4 py-3 text-center border-r border-gray-100 truncate">
+                          <td className="px-4 py-3 text-center border-r border-gray-100 truncate whitespace-nowrap">
                             <span className={`inline-flex items-center justify-center px-2 py-1 border rounded-lg text-[12px] font-bold shadow-sm truncate max-w-full ${stockInfo.color}`}>
                               {stockInfo.text}
                             </span>
+                            {row.trends && renderTrend(row.trends.stock, false)}
                           </td>
                           <td className="px-4 py-3 border-r border-gray-100 whitespace-normal break-words text-[12px] text-gray-600 leading-snug">
                             {row.note || '—'}

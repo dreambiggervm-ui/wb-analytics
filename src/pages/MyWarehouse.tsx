@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from 'react';
-import { Upload, Plus, Minus, PackageSearch, Trash2, Edit3, History, ArrowRight, X, Download, FileSpreadsheet, Save, Filter } from 'lucide-react';
+import { Upload, Plus, Minus, PackageSearch, Trash2, Edit3, History, ArrowRight, X, Download, FileSpreadsheet, Save, Filter, Link as LinkIcon, Unlink, Box } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { db, MyStockItem } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -9,17 +9,24 @@ export default function MyWarehouse() {
   const stockItems = useLiveQuery(() => db.myWarehouse.toArray()) || [];
   const changes = useLiveQuery(() => db.myWarehouseChanges.toArray()) || [];
   
+  // Подтягиваем данные каталога WB для связей (они лежат в fbsStocks)
+  const wbProducts = useLiveQuery(() => db.fbsStocks.toArray()) || []; 
+  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+  
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>(''); // НОВОЕ: Состояние для фильтра
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
   
   const [historyItem, setHistoryItem] = useState<MyStockItem | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<Partial<MyStockItem>>({});
   
+  // Состояния для привязки ВБ
+  const [linkingStockId, setLinkingStockId] = useState<number | null>(null);
+  const [linkSearchWb, setLinkSearchWb] = useState('');
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // НОВОЕ: Автоматически получаем список всех уникальных категорий
   const uniqueCategories = useMemo(() => {
     const categories = new Set(stockItems.map(item => item.category || 'Без категории'));
     return Array.from(categories).sort();
@@ -28,12 +35,10 @@ export default function MyWarehouse() {
   const filteredItems = useMemo(() => {
     let result = [...stockItems];
     
-    // Фильтрация по категории
     if (selectedCategory) {
       result = result.filter(item => (item.category || 'Без категории') === selectedCategory);
     }
 
-    // Фильтрация по строке поиска
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       result = result.filter(item => 
@@ -47,10 +52,43 @@ export default function MyWarehouse() {
     return result;
   }, [stockItems, searchQuery, selectedCategory]);
 
+  // =================================================================
+  // ИСПРАВЛЕННЫЙ УМНЫЙ ПОИСК ПО WB (БЕЗ ДУБЛИКАТОВ РАЗМЕРОВ)
+  // =================================================================
+  const searchFilteredWbProducts = useMemo(() => {
+    let result = wbProducts;
+    
+    if (linkSearchWb) {
+      const q = linkSearchWb.toLowerCase();
+      result = wbProducts.filter(p => 
+        (p.title || '').toLowerCase().includes(q) || 
+        (p.vendorCode || '').toLowerCase().includes(q) ||
+        String(p.nmId).includes(q)
+      );
+    }
+
+    // Убираем дубликаты размеров (оставляем только уникальные nmId)
+    const uniqueProducts = [];
+    const seen = new Set();
+    for (const item of result) {
+      if (!seen.has(item.nmId)) {
+        seen.add(item.nmId);
+        uniqueProducts.push(item);
+      }
+    }
+
+    return uniqueProducts;
+  }, [wbProducts, linkSearchWb]);
+
   const handleDelete = async (id?: number) => {
     if (id && window.confirm('Удалить товар со склада?')) {
       await db.myWarehouse.delete(id);
       await db.myWarehouseChanges.where('itemId').equals(id).delete();
+      
+      const linksToDelete = await db.wbLinks.where('myStockItemId').equals(id).toArray();
+      for (const link of linksToDelete) {
+        await db.wbLinks.where('nmId').equals(link.nmId).delete();
+      }
     }
   };
 
@@ -58,6 +96,23 @@ export default function MyWarehouse() {
     if (window.confirm('ВНИМАНИЕ! Это удалит ВСЕ товары и историю с вашего склада. Продолжить?')) {
       await db.myWarehouse.clear();
       await db.myWarehouseChanges.clear();
+      await db.wbLinks.clear();
+    }
+  };
+
+  // =================================================================
+  // ЛОГИКА СВЯЗЫВАНИЯ WB
+  // =================================================================
+  const handleLinkWb = async (nmId: number) => {
+    if (!linkingStockId) return;
+    await db.wbLinks.put({ nmId: nmId, myStockItemId: linkingStockId });
+    setLinkingStockId(null);
+    setLinkSearchWb('');
+  };
+
+  const handleUnlinkWb = async (nmId: number) => {
+    if (window.confirm('Отвязать карточку Wildberries от этого товара?')) {
+      await db.wbLinks.where('nmId').equals(nmId).delete();
     }
   };
 
@@ -218,7 +273,6 @@ export default function MyWarehouse() {
           
           <SearchInput value={searchQuery} onChange={setSearchQuery} placeholder="Поиск товара..." />
           
-          {/* НОВЫЙ ФИЛЬТР ПО КАТЕГОРИЯМ */}
           <div className="relative flex items-center">
             <Filter size={14} className="absolute left-3 text-gray-400" />
             <select
@@ -262,62 +316,138 @@ export default function MyWarehouse() {
           <EmptyState icon={PackageSearch} title="Товары не найдены" description="Добавьте товары или измените параметры фильтрации." />
         ) : (
           <div className="overflow-auto flex-1">
-            <table className="w-full min-w-[950px] table-fixed text-left border-collapse whitespace-nowrap">
+            <table className="w-full min-w-[1050px] table-fixed text-left border-collapse whitespace-nowrap">
               <thead className="sticky top-0 z-20">
                 <tr className="text-[11px] uppercase tracking-wider text-gray-500 font-bold bg-gray-50 border-b border-gray-200">
-                  <th className="px-5 py-3 sticky left-0 bg-gray-50 z-30 shadow-[1px_0_0_0_#e5e7eb] w-[35%]">Наименование и Категория</th>
-                  <th className="px-5 py-3 border-r border-gray-100 text-right w-[15%]">Опт (Закупка)</th>
-                  <th className="px-5 py-3 border-r border-gray-100 text-center w-[20%]">Остаток</th>
-                  <th className="px-5 py-3 border-r border-gray-100 w-[20%]">Примечание</th>
+                  <th className="px-5 py-3 sticky left-0 bg-gray-50 z-30 shadow-[1px_0_0_0_#e5e7eb] w-[30%]">Наименование и Категория</th>
+                  <th className="px-5 py-3 border-r border-gray-100 text-right w-[10%]">Опт</th>
+                  <th className="px-5 py-3 border-r border-gray-100 text-center w-[15%]">Остаток</th>
+                  <th className="px-5 py-3 border-r border-gray-100 min-w-[220px]">Связь с ВБ (Карточки)</th>
                   <th className="px-5 py-3 text-center w-[15%]">Действия</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {filteredItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-gray-50/80 transition-colors bg-white group">
-                    <td className="px-5 py-3 sticky left-0 bg-white group-hover:bg-gray-50/80 z-10 shadow-[1px_0_0_0_#f3f4f6] whitespace-normal break-words">
-                      <div className="flex flex-col justify-center">
-                        <h3 className="text-[14px] font-bold text-[#1e3a5f] leading-snug line-clamp-2">{item.title}</h3>
-                        <div className="mt-1.5 flex items-center gap-2">
-                          <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md text-[11px] font-bold border border-indigo-100 cursor-pointer hover:bg-indigo-100" onClick={() => setSelectedCategory(item.category || 'Без категории')} title="Фильтровать по этой категории">
-                            {item.category || 'Без категории'}
-                          </span>
+                {filteredItems.map((item) => {
+                  const linkedWbItems = wbLinks
+                    .filter(l => l.myStockItemId === item.id)
+                    .map(l => wbProducts.find(p => p.nmId === l.nmId))
+                    .filter(Boolean);
+
+                  return (
+                    <tr key={item.id} className="hover:bg-gray-50/80 transition-colors bg-white group">
+                      <td className="px-5 py-3 sticky left-0 bg-white group-hover:bg-gray-50/80 z-10 shadow-[1px_0_0_0_#f3f4f6] whitespace-normal break-words">
+                        <div className="flex flex-col justify-center">
+                          <h3 className="text-[14px] font-bold text-[#1e3a5f] leading-snug line-clamp-2">{item.title}</h3>
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <span className="bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-md text-[11px] font-bold border border-indigo-100 cursor-pointer hover:bg-indigo-100" onClick={() => setSelectedCategory(item.category || 'Без категории')} title="Фильтровать по этой категории">
+                              {item.category || 'Без категории'}
+                            </span>
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3 border-r border-gray-100 text-right align-middle">
-                       <span className="text-[14px] font-bold text-gray-800">{item.price ? `${item.price} ₽` : '0 ₽'}</span>
-                    </td>
-                    <td className="px-5 py-3 border-r border-gray-100 text-center align-middle">
-                      <div className="flex items-center justify-center gap-2">
-                        <button onClick={() => handleQuickStockChange(item, -1)} disabled={item.quantity <= 0} className="w-7 h-7 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"><Minus size={14} /></button>
-                        <div className={`inline-flex items-center justify-center min-w-[44px] h-[30px] px-2.5 border rounded-lg text-[13px] font-bold shadow-sm ${item.quantity > 0 ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>{item.quantity} шт</div>
-                        <button onClick={() => handleQuickStockChange(item, 1)} className="w-7 h-7 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 hover:bg-green-100 hover:text-green-600 transition-colors"><Plus size={14} /></button>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3 border-r border-gray-100 whitespace-normal break-words text-[12px] text-gray-600 align-middle">
-                       {item.note || '—'}
-                    </td>
-                    <td className="px-5 py-3 text-center align-middle">
-                      <div className="flex items-center justify-center gap-3">
-                        <button onClick={() => setHistoryItem(item)} className={`flex items-center gap-1.5 text-[12px] font-bold px-2 py-1 rounded-md transition-colors ${changes.some(c => c.itemId === item.id) ? 'text-blue-600 hover:text-blue-800 hover:bg-blue-50' : 'text-gray-400 hover:bg-gray-100'}`} title={changes.some(c => c.itemId === item.id) ? 'Посмотреть историю' : 'Истории пока нет'}>
-                          <History size={14} /> История
-                        </button>
-                        <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => openManualModal(item)} className="text-gray-400 hover:text-blue-600 transition-colors"><Edit3 size={16}/></button>
-                          <button onClick={() => handleDelete(item.id)} className="text-gray-400 hover:text-red-600 transition-colors"><Trash2 size={16}/></button>
+                      </td>
+                      <td className="px-5 py-3 border-r border-gray-100 text-right align-middle">
+                        <span className="text-[14px] font-bold text-gray-800">{item.price ? `${item.price} ₽` : '0 ₽'}</span>
+                      </td>
+                      <td className="px-5 py-3 border-r border-gray-100 text-center align-middle">
+                        <div className="flex items-center justify-center gap-2">
+                          <button onClick={() => handleQuickStockChange(item, -1)} disabled={item.quantity <= 0} className="w-7 h-7 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 hover:bg-red-100 hover:text-red-600 disabled:opacity-50 transition-colors"><Minus size={14} /></button>
+                          <div className={`inline-flex items-center justify-center min-w-[44px] h-[30px] px-2.5 border rounded-lg text-[13px] font-bold shadow-sm ${item.quantity > 0 ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>{item.quantity} шт</div>
+                          <button onClick={() => handleQuickStockChange(item, 1)} className="w-7 h-7 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 hover:bg-green-100 hover:text-green-600 transition-colors"><Plus size={14} /></button>
                         </div>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+
+                      <td className="px-5 py-3 border-r border-gray-100 align-middle">
+                        <div className="flex flex-col gap-2">
+                          {linkedWbItems.map(p => (
+                             <div key={p!.nmId} className="flex items-center justify-between gap-3 px-2 py-1.5 bg-blue-50/50 rounded-lg border border-blue-100">
+                               <div className="flex flex-col max-w-[200px] whitespace-normal break-words">
+                                 <span className="text-[11px] font-bold text-blue-900 leading-tight line-clamp-1" title={p!.title}>{p!.title}</span>
+                                 <span className="text-[10px] text-gray-500 mt-0.5">Арт: {p!.vendorCode}</span>
+                               </div>
+                               <button onClick={() => handleUnlinkWb(p!.nmId)} className="text-blue-300 hover:text-red-500 transition-colors flex-shrink-0" title="Отвязать WB карточку">
+                                 <Unlink size={14} />
+                               </button>
+                             </div>
+                          ))}
+                          <button 
+                            onClick={() => setLinkingStockId(item.id!)} 
+                            className="inline-flex w-max items-center gap-1 text-[11px] font-bold text-gray-400 hover:text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                          >
+                            <LinkIcon size={12} /> {linkedWbItems.length > 0 ? 'Привязать еще карточку' : 'Привязать карточку WB'}
+                          </button>
+                        </div>
+                      </td>
+
+                      <td className="px-5 py-3 text-center align-middle">
+                        <div className="flex items-center justify-center gap-3">
+                          <button onClick={() => setHistoryItem(item)} className={`flex items-center gap-1.5 text-[12px] font-bold px-2 py-1 rounded-md transition-colors ${changes.some(c => c.itemId === item.id) ? 'text-blue-600 hover:text-blue-800 hover:bg-blue-50' : 'text-gray-400 hover:bg-gray-100'}`} title="Посмотреть историю">
+                            <History size={14} /> История
+                          </button>
+                          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => openManualModal(item)} className="text-gray-400 hover:text-blue-600 transition-colors"><Edit3 size={16}/></button>
+                            <button onClick={() => handleDelete(item.id)} className="text-gray-400 hover:text-red-600 transition-colors"><Trash2 size={16}/></button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
         )}
       </TableWrapper>
 
-      {/* МОДАЛКА "РУЧНОЕ ДОБАВЛЕНИЕ / РЕДАКТИРОВАНИЕ" */}
+      {/* МОДАЛЬНОЕ ОКНО ПОИСКА WB ДЛЯ ПРИВЯЗКИ */}
+      {linkingStockId && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col h-[75vh] animate-in fade-in zoom-in duration-200">
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-blue-50/50">
+              <div>
+                <h3 className="text-[16px] font-bold text-[#1e3a5f] flex items-center gap-2">
+                  <LinkIcon size={18} className="text-blue-500" /> Связать с карточкой Wildberries
+                </h3>
+                <p className="text-[12px] text-gray-500 mt-1">Выберите товар из каталога WB, который соответствует этому товару на складе</p>
+              </div>
+              <button onClick={() => {setLinkingStockId(null); setLinkSearchWb('');}} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-white rounded-lg transition-colors"><X size={20} /></button>
+            </div>
+            
+            <div className="p-4 border-b border-gray-100 bg-white">
+               <SearchInput value={linkSearchWb} onChange={setLinkSearchWb} placeholder="Поиск по артикулу или названию WB..." />
+            </div>
+
+            <div className="overflow-y-auto flex-1 p-2 space-y-1 bg-gray-50/50">
+              {searchFilteredWbProducts.length === 0 ? (
+                <div className="text-center p-8 text-gray-400 text-[13px]">
+                  <Box size={32} className="mx-auto mb-2 opacity-50" />
+                  В каталоге WB ничего не найдено по вашему запросу.
+                </div>
+              ) : (
+                searchFilteredWbProducts.map(wbItem => (
+                  <div 
+                    key={wbItem.nmId}
+                    onClick={() => handleLinkWb(wbItem.nmId)}
+                    className="flex items-center gap-4 p-3 bg-white border border-gray-100 rounded-xl cursor-pointer hover:border-blue-300 hover:bg-blue-50 transition-all shadow-sm"
+                  >
+                    <div className="w-10 h-10 rounded border border-gray-200 overflow-hidden flex-shrink-0 bg-gray-50 flex items-center justify-center">
+                      {wbItem.photo ? <img src={wbItem.photo} alt="img" className="w-full h-full object-cover" /> : <span className="text-xs text-gray-300">Нет</span>}
+                    </div>
+                    <div className="flex flex-col flex-1 min-w-0 pr-4">
+                      <span className="text-[13px] font-bold text-gray-800 leading-snug line-clamp-1">{wbItem.title}</span>
+                      <div className="flex gap-3 mt-1">
+                        <span className="text-[11px] font-medium text-gray-500">Арт: <span className="text-gray-700">{wbItem.vendorCode}</span></span>
+                        <span className="text-[11px] font-medium text-gray-500">nmID: <span className="text-gray-700">{wbItem.nmId}</span></span>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ОСТАЛЬНЫЕ ОКНА РЕДАКТИРОВАНИЯ И ИСТОРИИ */}
       {isManualModalOpen && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
@@ -329,29 +459,26 @@ export default function MyWarehouse() {
             <div className="p-6 space-y-4">
               <div>
                 <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Наименование *</label>
-                <input type="text" value={editingItem.title || ''} onChange={e => setEditingItem({...editingItem, title: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Футболка мужская белая" />
+                <input type="text" value={editingItem.title || ''} onChange={e => setEditingItem({...editingItem, title: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
               </div>
               <div>
                 <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Категория</label>
-                <input type="text" list="categoryList" value={editingItem.category || ''} onChange={e => setEditingItem({...editingItem, category: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Одежда" />
-                {/* Подсказки существующих категорий при вводе */}
-                <datalist id="categoryList">
-                  {uniqueCategories.map(cat => <option key={cat} value={cat} />)}
-                </datalist>
+                <input type="text" list="categoryList" value={editingItem.category || ''} onChange={e => setEditingItem({...editingItem, category: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
+                <datalist id="categoryList">{uniqueCategories.map(cat => <option key={cat} value={cat} />)}</datalist>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Опт (Цена, ₽)</label>
-                  <input type="number" min="0" step="0.01" value={editingItem.price === 0 ? '' : editingItem.price} onChange={e => setEditingItem({...editingItem, price: parseFloat(e.target.value) || 0})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" placeholder="0" />
+                  <input type="number" min="0" step="0.01" value={editingItem.price === 0 ? '' : editingItem.price} onChange={e => setEditingItem({...editingItem, price: parseFloat(e.target.value) || 0})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Остаток (ШТ)</label>
-                  <input type="number" min="0" value={editingItem.quantity === 0 ? '' : editingItem.quantity} onChange={e => setEditingItem({...editingItem, quantity: parseInt(e.target.value, 10) || 0})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" placeholder="0" />
+                  <input type="number" min="0" value={editingItem.quantity === 0 ? '' : editingItem.quantity} onChange={e => setEditingItem({...editingItem, quantity: parseInt(e.target.value, 10) || 0})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
                 </div>
               </div>
               <div>
                 <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Примечание</label>
-                <input type="text" value={editingItem.note || ''} onChange={e => setEditingItem({...editingItem, note: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Дополнительная информация..." />
+                <input type="text" value={editingItem.note || ''} onChange={e => setEditingItem({...editingItem, note: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
               </div>
             </div>
 
@@ -363,7 +490,6 @@ export default function MyWarehouse() {
         </div>
       )}
 
-      {/* МОДАЛЬНОЕ ОКНО "ИСТОРИЯ ИЗМЕНЕНИЙ ТОВАРА" */}
       {historyItem && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden flex flex-col max-h-[80vh] animate-in fade-in zoom-in duration-200">
@@ -371,12 +497,9 @@ export default function MyWarehouse() {
               <h3 className="text-[15px] font-bold text-[#1e3a5f] truncate pr-4">История: {historyItem.title}</h3>
               <button onClick={() => setHistoryItem(null)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"><X size={20} /></button>
             </div>
-            
             <div className="p-0 overflow-y-auto flex-1">
               {changes.filter(c => c.itemId === historyItem.id).length === 0 ? (
-                <div className="p-8 text-center text-gray-500 text-[14px]">
-                  У этого товара пока нет истории изменений.
-                </div>
+                <div className="p-8 text-center text-gray-500 text-[14px]">У этого товара пока нет истории изменений.</div>
               ) : (
                 <table className="w-full text-left border-collapse">
                   <thead className="bg-gray-50 border-b border-gray-100 sticky top-0">
@@ -389,22 +512,14 @@ export default function MyWarehouse() {
                   <tbody className="divide-y divide-gray-100">
                     {changes.filter(c => c.itemId === historyItem.id).sort((a,b) => new Date(b.changeDate).getTime() - new Date(a.changeDate).getTime()).map(change => (
                       <tr key={change.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-[12px] text-gray-500 font-medium">
-                          {new Date(change.changeDate).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <span className="text-[11px] font-bold bg-blue-50 text-blue-700 px-2 py-1 rounded uppercase">{change.field}</span>
-                        </td>
+                        <td className="px-4 py-3 text-[12px] text-gray-500 font-medium">{new Date(change.changeDate).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
+                        <td className="px-4 py-3 text-center"><span className="text-[11px] font-bold bg-blue-50 text-blue-700 px-2 py-1 rounded uppercase">{change.field}</span></td>
                         <td className="px-4 py-3 text-center">
                           <div className="flex items-center justify-center gap-2">
                             <span className="text-[13px] text-gray-400 line-through">{change.oldValue}</span>
                             <ArrowRight size={14} className="text-gray-300" />
-                            <span className={`text-[13px] font-bold px-2 py-0.5 rounded-md border ${
-                              parseFloat(change.newValue) > parseFloat(change.oldValue) 
-                                ? 'bg-green-50 text-green-700 border-green-200' 
-                                : 'bg-red-50 text-red-700 border-red-200'
-                            }`}>
-                              {change.newValue} {change.field === 'Остаток' ? 'шт' : '₽'}
+                            <span className={`text-[13px] font-bold px-2 py-0.5 rounded-md border ${parseFloat(change.newValue) > parseFloat(change.oldValue) ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                              {change.newValue} {change.field.includes('Остаток') ? 'шт' : '₽'}
                             </span>
                           </div>
                         </td>
