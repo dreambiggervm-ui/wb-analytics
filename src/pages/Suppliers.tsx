@@ -424,7 +424,7 @@ export default function Suppliers() {
   };
 
   // =================================================================
-  // ПЕРЕНОС ТОВАРА НА "МОЙ СКЛАД"
+  // ПЕРЕНОС ТОВАРА НА "МОЙ СКЛАД" (ТЕПЕРЬ ДОБАВЛЯЕТ ОСТАТКИ И ПАРТИИ)
   // =================================================================
   const openTransferModal = (row: any) => {
     const price = parseFloat(String(row.wholesale || '').replace(/[^\d.,]/g, '').replace(',', '.')) || 0;
@@ -443,31 +443,53 @@ export default function Suppliers() {
     if (!transferItem?.title) return alert('Ошибка: у товара нет названия');
     
     const now = new Date().toISOString();
-    const itemToSave = {
-      title: transferItem.title,
-      category: transferItem.category || 'Без категории',
-      price: Number(transferItem.price) || 0,
-      quantity: Number(transferItem.quantity) || 0,
-      note: transferItem.note || ''
-    } as MyStockItem;
+    const todayDate = now.split('T')[0];
+    
+    const priceToSave = Number(transferItem.price) || 0;
+    const quantityToSave = Number(transferItem.quantity) || 0;
 
-    const existingItem = await db.myWarehouse.where('title').equals(itemToSave.title).first();
+    if (quantityToSave <= 0) {
+      return alert('Укажите количество больше 0 для добавления на склад.');
+    }
+
+    const existingItem = await db.myWarehouse.where('title').equals(transferItem.title).first();
 
     if (existingItem) {
-      if (window.confirm('Товар с таким названием уже есть на вашем складе. Обновить его цены и остатки?')) {
-        const logs: any[] = [];
-        if (existingItem.price !== itemToSave.price) logs.push({ itemId: existingItem.id, title: existingItem.title, field: 'Опт', oldValue: String(existingItem.price), newValue: String(itemToSave.price), changeDate: now });
-        if (existingItem.quantity !== itemToSave.quantity) logs.push({ itemId: existingItem.id, title: existingItem.title, field: 'Остаток', oldValue: String(existingItem.quantity), newValue: String(itemToSave.quantity), changeDate: now });
-        
-        await db.transaction('rw', db.myWarehouse, db.myWarehouseChanges, async () => {
-           await db.myWarehouse.update(existingItem.id!, itemToSave);
-           if (logs.length > 0) await db.myWarehouseChanges.bulkAdd(logs);
-        });
-        alert('Данные товара на вашем складе обновлены!');
+      // ТОВАР УЖЕ ЕСТЬ: прибавляем остаток и записываем новую партию
+      const newTotalQty = existingItem.quantity + quantityToSave;
+      const newReceipts = existingItem.receipts ? [...existingItem.receipts] : [];
+      
+      newReceipts.push({ date: todayDate, quantity: quantityToSave, price: priceToSave });
+
+      const logs: any[] = [];
+      if (existingItem.price !== priceToSave) {
+        logs.push({ itemId: existingItem.id, title: existingItem.title, field: 'Опт', oldValue: String(existingItem.price), newValue: String(priceToSave), changeDate: now });
       }
+      logs.push({ itemId: existingItem.id, title: existingItem.title, field: 'Остаток', oldValue: String(existingItem.quantity), newValue: String(newTotalQty), changeDate: now });
+      
+      await db.transaction('rw', db.myWarehouse, db.myWarehouseChanges, async () => {
+         await db.myWarehouse.update(existingItem.id!, {
+           quantity: newTotalQty,
+           price: priceToSave,
+           receipts: newReceipts,
+           note: transferItem.note || existingItem.note
+         } as any);
+         if (logs.length > 0) await db.myWarehouseChanges.bulkAdd(logs);
+      });
+      alert(`Новая партия добавлена к существующему товару!\nНовый общий остаток: ${newTotalQty} шт.`);
     } else {
+      // НОВЫЙ ТОВАР: просто создаем с первой партией
+      const itemToSave = {
+        title: transferItem.title,
+        category: transferItem.category || 'Без категории',
+        price: priceToSave,
+        quantity: quantityToSave,
+        note: transferItem.note || '',
+        receipts: [{ date: todayDate, quantity: quantityToSave, price: priceToSave }]
+      } as MyStockItem;
+
       await db.myWarehouse.add(itemToSave);
-      alert('Товар успешно добавлен на ваш склад!');
+      alert('Новый товар успешно добавлен на ваш склад!');
     }
     
     setTransferItem(null);
@@ -636,7 +658,7 @@ export default function Suppliers() {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-blue-50/80">
               <h3 className="text-[16px] font-bold text-blue-900 flex items-center gap-2">
-                <PackageSearch size={18} /> Перенос на Мой склад
+                <PackageSearch size={18} /> Добавление на Мой склад
               </h3>
               <button onClick={() => setTransferItem(null)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"><X size={20} /></button>
             </div>
@@ -656,7 +678,7 @@ export default function Suppliers() {
                   <input type="number" min="0" step="0.01" value={transferItem.price === 0 ? '' : transferItem.price} onChange={e => setTransferItem({...transferItem, price: parseFloat(e.target.value) || 0})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Остаток (ШТ)</label>
+                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Добавить (ШТ)</label>
                   <input type="number" min="0" value={transferItem.quantity === 0 ? '' : transferItem.quantity} onChange={e => setTransferItem({...transferItem, quantity: parseInt(e.target.value, 10) || 0})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
                 </div>
               </div>

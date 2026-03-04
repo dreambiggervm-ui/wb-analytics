@@ -21,7 +21,7 @@ export default function MyWarehouse() {
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<Partial<MyStockItem>>({});
   
-  // НОВОЕ: Состояние для редактирования партий (поступлений)
+  // Состояние для редактирования партий (поступлений)
   const [editingReceipts, setEditingReceipts] = useState<StockReceipt[]>([]);
   
   // Состояния для привязки ВБ
@@ -58,6 +58,7 @@ export default function MyWarehouse() {
   const searchFilteredWbProducts = useMemo(() => {
     let result = wbProducts;
     
+    // 1. Ручной поиск (если пользователь начал вводить текст в модальном окне)
     if (linkSearchWb) {
       const q = linkSearchWb.toLowerCase();
       result = wbProducts.filter(p => 
@@ -67,6 +68,7 @@ export default function MyWarehouse() {
       );
     }
 
+    // 2. Убираем дубликаты (оставляем только уникальные nmId)
     const uniqueProducts = [];
     const seen = new Set();
     for (const item of result) {
@@ -76,8 +78,48 @@ export default function MyWarehouse() {
       }
     }
 
+    // 3. УМНАЯ СОРТИРОВКА: поднимаем вверх наиболее подходящие товары
+    if (linkingStockId) {
+      const localItem = stockItems.find(item => item.id === linkingStockId);
+      
+      if (localItem) {
+        const localTitle = (localItem.title || '').toLowerCase();
+        const localNote = (localItem.note || '').toLowerCase();
+        
+        // Разбиваем наименование локального товара на слова (длиннее 2 букв), чтобы искать совпадения
+        const localWords = localTitle.split(/[\s,.-]+/).filter(w => w.length > 2);
+
+        uniqueProducts.sort((a, b) => {
+          let scoreA = 0;
+          let scoreB = 0;
+          
+          const titleA = (a.title || '').toLowerCase();
+          const vendorA = (a.vendorCode || '').toLowerCase();
+          
+          const titleB = (b.title || '').toLowerCase();
+          const vendorB = (b.vendorCode || '').toLowerCase();
+
+          // --- Оценка товара А (первая карточка WB) ---
+          // Наивысший приоритет: Прямое совпадение артикула WB в названии или примечании локального склада
+          if (vendorA && (localTitle.includes(vendorA) || localNote.includes(vendorA))) scoreA += 100;
+          // Полное совпадение названия
+          if (titleA === localTitle) scoreA += 50;
+          // Частичное совпадение: добавляем очки за каждое общее слово
+          localWords.forEach(w => { if (titleA.includes(w)) scoreA += 5; });
+
+          // --- Оценка товара B (вторая карточка WB) ---
+          if (vendorB && (localTitle.includes(vendorB) || localNote.includes(vendorB))) scoreB += 100;
+          if (titleB === localTitle) scoreB += 50;
+          localWords.forEach(w => { if (titleB.includes(w)) scoreB += 5; });
+
+          // Сортируем по убыванию очков (чем больше очков, тем выше в списке)
+          return scoreB - scoreA;
+        });
+      }
+    }
+
     return uniqueProducts;
-  }, [wbProducts, linkSearchWb]);
+  }, [wbProducts, linkSearchWb, linkingStockId, stockItems]);
 
   const handleDelete = async (id?: number) => {
     if (id && window.confirm('Удалить товар со склада?')) {
@@ -88,14 +130,6 @@ export default function MyWarehouse() {
       for (const link of linksToDelete) {
         await db.wbLinks.where('nmId').equals(link.nmId).delete();
       }
-    }
-  };
-
-  const clearWarehouse = async () => {
-    if (window.confirm('ВНИМАНИЕ! Это удалит ВСЕ товары и историю с вашего склада. Продолжить?')) {
-      await db.myWarehouse.clear();
-      await db.myWarehouseChanges.clear();
-      await db.wbLinks.clear();
     }
   };
 
@@ -113,7 +147,7 @@ export default function MyWarehouse() {
   };
 
   const handleDownloadTemplate = () => {
-    const data = [{ 'Категория': 'Одежда', 'Наименование': 'Пример: Футболка белая', 'Опт': 500, 'Остаток': 15, 'Примечание': 'На витрине' }];
+    const data = [{ 'Категория': 'Одежда', 'Наименование': 'Пример: Футболка белая', 'Опт': 500, 'Остаток': 15, 'Дата': new Date().toLocaleDateString('ru-RU'), 'Примечание': 'На витрине' }];
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Шаблон');
@@ -160,6 +194,7 @@ export default function MyWarehouse() {
       const colPrice = headers.findIndex(h => ['опт', 'цена', 'закупка'].includes(h));
       const colStock = headers.findIndex(h => ['остаток', 'склад', 'кол-во', 'количество'].includes(h));
       const colNote = headers.findIndex(h => ['примечание', 'инфо', 'описание'].includes(h));
+      const colDate = headers.findIndex(h => ['дата', 'дата поступления', 'поступление'].includes(h));
 
       if (colTitle === -1) throw new Error('Не найдена колонка "Наименование"');
 
@@ -179,16 +214,33 @@ export default function MyWarehouse() {
         const quantity = colStock !== -1 ? parseInt(String(row[colStock]).replace(/[^\d-]/g, ''), 10) || 0 : 0;
         const note = colNote !== -1 && row[colNote] ? String(row[colNote]).trim() : '';
 
+        // Парсинг даты из Excel
+        let receiptDate = todayDate;
+        if (colDate !== -1 && row[colDate]) {
+          const rawDate = row[colDate];
+          if (typeof rawDate === 'number') {
+            const dateObj = new Date(Math.round((rawDate - 25569) * 86400 * 1000));
+            if (!isNaN(dateObj.getTime())) receiptDate = dateObj.toISOString().split('T')[0];
+          } else {
+            const parts = String(rawDate).split('.');
+            if (parts.length === 3) {
+              receiptDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+            } else {
+              const parsed = new Date(String(rawDate));
+              if (!isNaN(parsed.getTime())) receiptDate = parsed.toISOString().split('T')[0];
+            }
+          }
+        }
+
         const existingItem = stockItems.find(item => item.title.toLowerCase() === title.toLowerCase());
 
         if (existingItem) {
           let changed = false;
           
-          // НОВОЕ: Если остаток увеличился, добавляем это как новую ПАРТИЮ (поступление)
           const addedQty = quantity - existingItem.quantity;
           const newReceipts = existingItem.receipts ? [...existingItem.receipts] : [];
           if (addedQty > 0) {
-            newReceipts.push({ date: todayDate, quantity: addedQty, price: price });
+            newReceipts.push({ date: receiptDate, quantity: addedQty, price: price });
           }
 
           const updatedItem = { ...existingItem, category, price, quantity, note: note || existingItem.note, receipts: newReceipts };
@@ -205,10 +257,9 @@ export default function MyWarehouse() {
 
           if (changed || existingItem.category !== category) itemsToUpdate.push(updatedItem);
         } else {
-          // НОВОЕ: Для новых товаров сразу создаем первую партию
           newItemsToSave.push({ 
             title, category, price, quantity, note,
-            receipts: [{ date: todayDate, quantity, price }]
+            receipts: [{ date: receiptDate, quantity, price }]
           });
         }
       }
@@ -251,7 +302,7 @@ export default function MyWarehouse() {
       price: Number(editingItem.price) || 0,
       quantity: Number(editingItem.quantity) || 0,
       note: editingItem.note || '',
-      receipts: editingReceipts.filter(r => r.quantity > 0) // Сохраняем только заполненные партии
+      receipts: editingReceipts.filter(r => r.quantity > 0)
     } as MyStockItem;
 
     if (!itemToSave.id && itemToSave.receipts!.length > 0 && itemToSave.quantity === 0) {
@@ -267,7 +318,7 @@ export default function MyWarehouse() {
         if (oldItem.quantity !== itemToSave.quantity) logs.push({ itemId: oldItem.id, title: oldItem.title, field: 'Остаток', oldValue: String(oldItem.quantity), newValue: String(itemToSave.quantity), changeDate: now });
         
         await db.transaction('rw', db.myWarehouse, db.myWarehouseChanges, async () => {
-          await db.myWarehouse.update(editingItem.id!, itemToSave);
+          await db.myWarehouse.put(itemToSave);
           if (logs.length > 0) await db.myWarehouseChanges.bulkAdd(logs);
         });
       }
@@ -286,7 +337,7 @@ export default function MyWarehouse() {
     const log = { itemId: item.id!, title: item.title, field: 'Остаток', oldValue: String(item.quantity), newValue: String(newQuantity), changeDate: now };
 
     await db.transaction('rw', db.myWarehouse, db.myWarehouseChanges, async () => {
-      await db.myWarehouse.update(item.id!, { quantity: newQuantity });
+      await db.myWarehouse.put({ ...item, quantity: newQuantity });
       await db.myWarehouseChanges.add(log);
     });
   };
@@ -400,12 +451,16 @@ export default function MyWarehouse() {
                                </button>
                              </div>
                           ))}
-                          <button 
-                            onClick={() => setLinkingStockId(item.id!)} 
-                            className="inline-flex w-max items-center gap-1 text-[11px] font-bold text-gray-400 hover:text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
-                          >
-                            <LinkIcon size={12} /> {linkedWbItems.length > 0 ? 'Привязать еще карточку' : 'Привязать карточку WB'}
-                          </button>
+                          
+                          {/* Кнопка показывается только если нет привязанных карточек */}
+                          {linkedWbItems.length === 0 && (
+                            <button 
+                              onClick={() => setLinkingStockId(item.id!)} 
+                              className="inline-flex w-max items-center gap-1 text-[11px] font-bold text-gray-400 hover:text-blue-600 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                            >
+                              <LinkIcon size={12} /> Привязать карточку WB
+                            </button>
+                          )}
                         </div>
                       </td>
 
@@ -504,7 +559,6 @@ export default function MyWarehouse() {
                 </div>
               </div>
               
-              {/* НОВОЕ: БЛОК ИСТОРИИ ПОСТУПЛЕНИЙ */}
               <div className="mt-4 pt-4 border-t border-gray-100">
                 <div className="flex justify-between items-center mb-3">
                   <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest">История поступлений (Партии)</label>
