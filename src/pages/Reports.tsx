@@ -1,10 +1,11 @@
 import { useState, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, BarChart3, List, Layers, FileSpreadsheet, X, ChevronDown, ChevronRight, Filter, ArrowUpDown, Search, AlertCircle, Bell, ExternalLink, Edit2, Check, Link as LinkIcon } from 'lucide-react';
+import { Download, BarChart3, List, Layers, FileSpreadsheet, X, ChevronDown, ChevronRight, Filter, AlertCircle, Bell, ExternalLink, Edit2, Check, Link as LinkIcon, Search, Trash2 } from 'lucide-react';
 import { fetchFinancialReport } from '../utils/api';
 import { exportToExcel } from '../utils/excel';
 import { db } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { PageLayout, Toolbar, SearchInput, Button, TableWrapper, EmptyState } from '../components/ui';
 
 const KEY_TRANSLATIONS: Record<string, string> = {
   rrd_id: "Номер строки", rr_dt: "Дата операции", create_dt: "Дата формирования", doc_type_name: "Тип документа",
@@ -67,18 +68,20 @@ export default function Reports() {
   
   const [isMissingPricesModalOpen, setIsMissingPricesModalOpen] = useState(false);
 
+  // Состояния сырого отчета и фильтры столбцов
   const [rawDisplayCount, setRawDisplayCount] = useState(ITEMS_PER_LOAD);
   const [rawDateStart, setRawDateStart] = useState('');
   const [rawDateEnd, setRawDateEnd] = useState('');
   const [rawSortField, setRawSortField] = useState<'date' | 'amount'>('date');
   const [rawSortOrder, setRawSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [rawColumnFilters, setRawColumnFilters] = useState<Record<string, string>>({});
 
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
   const savedProducts = useLiveQuery(() => db.products.toArray()) || [];
   const rawReports = useLiveQuery(() => db.rawReports.toArray()) || [];
   
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || []; // ОБНОВЛЕНО
+  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
 
   const loadNewReports = async () => {
     if (!token) return alert('API Токен (Статистика) не найден!');
@@ -105,15 +108,38 @@ export default function Reports() {
     } catch (error: any) { alert(error.message); } finally { setIsLoading(false); }
   };
 
+  const handleDeleteAllReports = async () => {
+    if (window.confirm('Вы уверены, что хотите удалить ВСЕ загруженные отчеты? Это очистит локальную базу, но вы всегда сможете загрузить их заново из WB.')) {
+      setIsLoading(true);
+      try {
+        await db.rawReports.clear();
+        alert('Все отчеты успешно удалены.');
+      } catch (error: any) {
+        alert('Ошибка при удалении: ' + error.message);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  };
+
   const handleGoToCatalog = (nmId: number) => {
     setIsMissingPricesModalOpen(false);
     navigate('/', { state: { openEditModalNmId: nmId } });
   };
 
+  const handleRawColumnFilterChange = (key: string, value: string) => {
+    setRawColumnFilters(prev => ({ ...prev, [key]: value }));
+    setRawDisplayCount(ITEMS_PER_LOAD);
+  };
+
+  // ==========================================
+  // АЛГОРИТМ РАСЧЕТА С ХРОНОЛОГИЕЙ И FIFO
+  // ==========================================
   const { detailedData, productAnalytics, dashboardData, filteredRawReports, missingPriceItems } = useMemo(() => {
     
+    // Подготовка истории FIFO
     const nmReceiptsMap = new Map();
-    wbLinks.forEach((link: any) => {
+    wbLinks.forEach(link => {
       const myItem = myWarehouse.find(m => m.id === link.myStockItemId);
       if (myItem && myItem.receipts && myItem.receipts.length > 0) {
         const sorted = [...myItem.receipts].sort((a, b) => a.date.localeCompare(b.date)).map(r => ({...r, used: 0}));
@@ -123,6 +149,7 @@ export default function Reports() {
 
     const shkCostMap = new Map();
     
+    // Сортировка продаж для FIFO
     const allSales = rawReports.filter(row => {
       const doc = (row.doc_type_name || "").toLowerCase();
       const op = (row.supplier_oper_name || "").toLowerCase();
@@ -188,7 +215,6 @@ export default function Reports() {
           title: row.subject_name || (shk === 0 ? 'Сводные операции' : 'Неизвестно'),
           vendorCode: row.sa_name || '',
           sale_amount: 0, return_amount: 0, logistics_amount: 0, other_expenses: 0, 
-          hasSale: false, hasReturn: false, isReturnedToSeller: false,
           first_date: null, original_items: [], aggregatedCost: 0
         });
       }
@@ -209,16 +235,12 @@ export default function Reports() {
       const operName = (row.supplier_oper_name || "").toLowerCase();
       const ppvz = row.ppvz_for_pay || 0;
 
-      if (docType === 'продажа') { unit.sale_amount += ppvz; unit.hasSale = true; } 
-      else if (docType === 'возврат') { unit.return_amount += ppvz; unit.hasReturn = true; } 
+      if (docType === 'продажа') { unit.sale_amount += ppvz; } 
+      else if (docType === 'возврат') { unit.return_amount += ppvz; } 
       else if (operName.includes('компенсация')) { unit.sale_amount += ppvz; }
 
       unit.logistics_amount += row.delivery_rub || 0;
       unit.other_expenses += (row.penalty || 0) + (row.deduction || 0) + (row.acceptance || 0) + (row.storage_fee || 0);
-
-      if (operName.includes('брак') || operName.includes('возврат продавцу')) {
-        unit.isReturnedToSeller = true;
-      }
 
       if (shk === 0 && (docType === 'продажа' || operName.includes('компенсация'))) {
         unit.aggregatedCost += (shkCostMap.get(`rrd_${row.rrd_id}`) || 0) * (row.quantity || 1);
@@ -234,19 +256,58 @@ export default function Reports() {
         if (!unit.vendorCode) unit.vendorCode = dbProduct.vendorCode;
       }
 
-      if (unit.shk_id === 0) unit.status = 'Сводные расходы';
-      else if (unit.isReturnedToSeller) unit.status = 'Возвращен продавцу';
-      else if (unit.hasReturn) unit.status = 'Отказ / Возврат';
-      else if (unit.hasSale) unit.status = 'Продажа';
-      else unit.status = 'Логистика / Обработка';
+      // 1. Сортируем все операции данного ШК по дате (хронология)
+      unit.original_items.sort((a: any, b: any) => new Date(a.rr_dt).getTime() - new Date(b.rr_dt).getTime());
 
+      let finalStatus = 'В пути / Обработка';
+
+      // 2. Идем по истории операций
+      unit.original_items.forEach((op: any) => {
+        const docType = (op.doc_type_name || '').toLowerCase();
+        const operName = (op.supplier_oper_name || '').toLowerCase();
+
+        // Поехала к клиенту
+        if (operName.includes('к клиенту при продаже')) {
+           finalStatus = 'В пути / Обработка'; 
+        }
+        
+        // Выкуп / Компенсация
+        if (docType === 'продажа' || operName.includes('компенсация')) {
+           finalStatus = 'Продажа';
+        }
+
+        // Отказ / Возврат
+        if (operName.includes('от клиента при отмене') || operName.includes('к клиенту при отмене') || docType === 'возврат') {
+           finalStatus = 'Отмена / Возврат';
+        }
+
+        // Возвраты продавцу
+        if (operName.includes('возврат брака')) {
+           finalStatus = 'Возврат брака (К продавцу)';
+        } else if (operName.includes('возврат кгт')) {
+           finalStatus = 'Возврат КГТ продавцу (К продавцу)';
+        } else if (operName.includes('приехал по мп')) {
+           finalStatus = 'Возврат по МП (К продавцу)';
+        } else if (operName.includes('возврат продавцу')) {
+           finalStatus = 'Возвращен продавцу';
+        }
+      });
+
+      // 3. Финальное присвоение статуса
+      if (unit.shk_id === 0) {
+        unit.status = 'Сводные расходы';
+      } else {
+        unit.status = finalStatus;
+      }
+
+      // Присвоение стоимости с учетом FIFO
       if (unit.shk_id !== 0) {
          unit.cost = shkCostMap.get(unit.shk_id) !== undefined ? shkCostMap.get(unit.shk_id) : getPriceForDate(unit.nm_id, unit.first_date, savedPrices);
       } else {
          unit.cost = unit.aggregatedCost || 0;
       }
       
-      unit.isLinked = wbLinks.some((l: any) => l.nmId === unit.nm_id);
+      unit.isLinked = wbLinks.some(l => l.nmId === unit.nm_id);
 
       if (unit.nm_id !== 0 && unit.cost === 0 && !uniqueMissingMap.has(unit.nm_id)) {
         uniqueMissingMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode });
@@ -266,7 +327,7 @@ export default function Reports() {
       totalOther += unit.other_expenses;
       totalCost += costToDeduct;
       totalTax += unit.tax;
-      if (unit.hasReturn) returnsCount++;
+      if (unit.status === 'Отмена / Возврат') returnsCount++;
 
       if (unit.nm_id !== 0) {
         if (!nmMap.has(unit.nm_id)) {
@@ -274,7 +335,7 @@ export default function Reports() {
         }
         const prodGroup = nmMap.get(unit.nm_id);
         if (isSold) prodGroup.soldCount++;
-        if (unit.status.includes('Возврат') || unit.status === 'Отказ / Возврат') prodGroup.returnCount++;
+        if (unit.status.includes('Возврат') || unit.status === 'Отмена / Возврат') prodGroup.returnCount++;
         prodGroup.revenue += unit.net_sales;
         prodGroup.profit += unit.netProfit;
       }
@@ -296,6 +357,7 @@ export default function Reports() {
     };
   }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd, myWarehouse, wbLinks]);
 
+  // Фильтры Вкладки 2
   const processedDetailedItems = useMemo(() => {
     let result = [...detailedData];
     if (detFilterStatus !== 'All') result = result.filter(u => u.status === detFilterStatus);
@@ -320,8 +382,11 @@ export default function Reports() {
   const detCurrentItems = processedDetailedItems.slice(0, detDisplayCount);
   const detHasMore = detDisplayCount < processedDetailedItems.length;
 
+  // Фильтры Вкладки 4 (Сырой отчет) - с поиском по столбцам
   const processedRawItems = useMemo(() => {
     let result = [...filteredRawReports];
+    
+    // 1. Фильтр по периоду
     if (rawDateStart || rawDateEnd) {
       result = result.filter(item => {
         const date = (item.rr_dt || item.create_dt || '').split('T')[0];
@@ -331,6 +396,18 @@ export default function Reports() {
         return true;
       });
     }
+
+    // 2. Фильтры по столбцам (Excel style)
+    Object.entries(rawColumnFilters).forEach(([key, searchVal]) => {
+      if (!searchVal) return;
+      const lowerSearch = searchVal.toLowerCase();
+      result = result.filter(item => {
+        const cellValue = item[key] !== null && item[key] !== undefined ? String(item[key]) : '';
+        return cellValue.toLowerCase().includes(lowerSearch);
+      });
+    });
+
+    // 3. Сортировка
     result.sort((a, b) => {
       let valA: any, valB: any;
       if (rawSortField === 'date') {
@@ -343,7 +420,7 @@ export default function Reports() {
       return 0;
     });
     return result;
-  }, [filteredRawReports, rawDateStart, rawDateEnd, rawSortField, rawSortOrder]);
+  }, [filteredRawReports, rawDateStart, rawDateEnd, rawSortField, rawSortOrder, rawColumnFilters]);
 
   const rawCurrentItems = processedRawItems.slice(0, rawDisplayCount);
   const rawHasMore = rawDisplayCount < processedRawItems.length;
@@ -351,36 +428,42 @@ export default function Reports() {
   const toggleRow = (shk_id: number) => setExpandedShk(expandedShk === shk_id ? null : shk_id);
 
   return (
-    <div className="p-8 w-full h-full flex flex-col space-y-6 relative">
+    <PageLayout>
       
       {/* ГЛОБАЛЬНАЯ ШАПКА */}
-      <div className="flex flex-wrap justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-gray-200 flex-shrink-0 gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Финансовая аналитика</h1>
-          <p className="text-gray-500 mt-1">Точная прибыль по ШК с учетом дат опта</p>
-        </div>
-        <div className="flex items-center gap-6">
-          <div className="flex flex-col items-end">
-            <span className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">Глобальный фильтр периода</span>
-            <div className="flex items-center gap-2 bg-blue-50/50 rounded-xl p-1.5 border border-blue-100">
-              <input type="date" value={globalDateStart} onChange={e => setGlobalDateStart(e.target.value)} className="bg-transparent border-none text-sm font-semibold text-blue-900 px-2 py-1 focus:ring-0 outline-none rounded-lg cursor-pointer" />
-              <span className="text-blue-300">—</span>
-              <input type="date" value={globalDateEnd} onChange={e => setGlobalDateEnd(e.target.value)} className="bg-transparent border-none text-sm font-semibold text-blue-900 px-2 py-1 focus:ring-0 outline-none rounded-lg cursor-pointer" />
-              {(globalDateStart || globalDateEnd) && (<button onClick={() => {setGlobalDateStart(''); setGlobalDateEnd('');}} className="p-1 text-gray-400 hover:text-red-500 transition-colors"><X size={16} /></button>)}
-            </div>
+      <Toolbar>
+        <div className="flex items-center gap-4 flex-wrap">
+          <h1 className="text-[16px] font-bold text-[#1e3a5f] pr-4 border-r border-gray-200 uppercase tracking-wider">
+            Финансовая аналитика
+          </h1>
+          <div className="flex items-center gap-2 bg-blue-50/50 rounded-lg p-1.5 border border-blue-100">
+            <span className="text-[11px] font-bold text-gray-500 uppercase px-2">Период:</span>
+            <input type="date" value={globalDateStart} onChange={e => setGlobalDateStart(e.target.value)} className="bg-transparent border-none text-[13px] font-medium text-blue-900 focus:ring-0 outline-none cursor-pointer" />
+            <span className="text-blue-300">—</span>
+            <input type="date" value={globalDateEnd} onChange={e => setGlobalDateEnd(e.target.value)} className="bg-transparent border-none text-[13px] font-medium text-blue-900 focus:ring-0 outline-none cursor-pointer" />
+            {(globalDateStart || globalDateEnd) && (<button onClick={() => {setGlobalDateStart(''); setGlobalDateEnd('');}} className="p-1 text-gray-400 hover:text-red-500 transition-colors"><X size={14} /></button>)}
           </div>
-          <div className="w-px h-12 bg-gray-200"></div>
-          <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-6 py-3 bg-gray-900 text-white rounded-xl text-base font-semibold hover:bg-gray-800 transition-colors shadow-md cursor-pointer">
-            <Download size={20} /> Загрузить из WB
-          </button>
         </div>
-      </div>
+        <div className="flex items-center gap-3">
+          <Button variant="outline" onClick={handleDeleteAllReports} disabled={isLoading} className="!text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300 transition-colors">
+            <Trash2 size={16} /> Удалить все
+          </Button>
+          <Button variant="primary" onClick={() => setIsModalOpen(true)}>
+            <Download size={16} /> Загрузить из WB
+          </Button>
+        </div>
+      </Toolbar>
 
       {/* Вкладки */}
-      <div className="flex justify-between items-center bg-gray-200/50 p-1.5 rounded-xl flex-shrink-0">
+      <div className="flex justify-between items-center flex-shrink-0 relative z-10">
         <div className="flex gap-2">
-          {[ { id: 1, name: 'Общий Дашборд', icon: <BarChart3 size={18} /> }, { id: 2, name: 'Детализация по ШК', icon: <List size={18} /> }, { id: 3, name: 'Аналитика товаров', icon: <Layers size={18} /> }, { id: 4, name: 'Сырой отчет', icon: <FileSpreadsheet size={18} /> } ].map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold transition-all ${activeTab === tab.id ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200'}`}>
+          {[ 
+            { id: 1, name: 'Общий Дашборд', icon: <BarChart3 size={16} /> }, 
+            { id: 2, name: 'Детализация по ШК', icon: <List size={16} /> }, 
+            { id: 3, name: 'Аналитика товаров', icon: <Layers size={16} /> }, 
+            { id: 4, name: 'Сырой отчет', icon: <FileSpreadsheet size={16} /> } 
+          ].map(tab => (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-[13px] font-bold transition-all ${activeTab === tab.id ? 'bg-white text-blue-600 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-200 border border-transparent'}`}>
               {tab.icon} {tab.name}
             </button>
           ))}
@@ -389,7 +472,7 @@ export default function Reports() {
         {missingPriceItems.length > 0 && (
           <button 
             onClick={() => setIsMissingPricesModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-colors bg-red-100 text-red-700 hover:bg-red-200 cursor-pointer"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-bold transition-colors bg-red-100 text-red-700 hover:bg-red-200 cursor-pointer shadow-sm border border-red-200"
           >
             <Bell size={16} className="animate-bounce" />
             Без себестоимости: {missingPriceItems.length} шт.
@@ -398,330 +481,347 @@ export default function Reports() {
       </div>
 
       {/* КОНТЕНТ ВКЛАДОК */}
-      <div className="flex-1 overflow-hidden flex flex-col bg-white rounded-2xl shadow-sm border border-gray-200">
-        
-        {/* ВКЛАДКА 1: ДАШБОРД */}
-        {activeTab === 1 && (
-          <div className="p-6 overflow-y-auto h-full space-y-6 bg-[#F5F5F7]">
-            <div className="grid grid-cols-4 gap-4">
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-                <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">Чистая продажа (ВБ)</p>
-                <h2 className="text-3xl font-black text-gray-900 mt-2">{dashboardData.sales.toLocaleString('ru-RU')} р</h2>
-              </div>
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 bg-gradient-to-br from-green-50 to-white">
-                <p className="text-sm font-bold text-green-700 uppercase tracking-wider">Чистая Прибыль</p>
-                <h2 className="text-3xl font-black text-green-600 mt-2">{dashboardData.profit.toLocaleString('ru-RU')} р</h2>
-              </div>
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-                <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">Налог 20%</p>
-                <h2 className="text-3xl font-black text-gray-700 mt-2">{dashboardData.tax.toLocaleString('ru-RU')} р</h2>
-              </div>
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-                <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">Логистика / Прочие</p>
-                <h2 className="text-2xl font-black text-red-500 mt-2">-{dashboardData.logistics.toLocaleString('ru-RU')} / -{dashboardData.penalties.toLocaleString('ru-RU')}</h2>
-              </div>
+      
+      {/* ВКЛАДКА 1: ДАШБОРД */}
+      {activeTab === 1 && (
+        <div className="flex-1 overflow-y-auto space-y-4">
+          <div className="grid grid-cols-4 gap-4">
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Чистая продажа (ВБ)</p>
+              <h2 className="text-2xl font-black text-gray-900 mt-1">{dashboardData.sales.toLocaleString('ru-RU')} р</h2>
             </div>
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
-              <h3 className="text-xl font-bold text-gray-900 mb-6">Топ-10 товаров по прибыли</h3>
-              <div className="space-y-4">
-                {dashboardData.topProducts.map((p: any, i: number) => (
-                  <div key={p.nm_id} className="flex items-center gap-4">
-                    <div className="w-8 font-bold text-gray-400">#{i+1}</div>
-                    <div className="flex-1"><p className="font-semibold text-gray-900 truncate max-w-md">{p.title}</p></div>
-                    <div className="w-32 text-right font-bold text-gray-900">{p.profit.toLocaleString('ru-RU')} р</div>
-                  </div>
-                ))}
-              </div>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-green-200 bg-gradient-to-br from-green-50 to-white">
+              <p className="text-[11px] font-bold text-green-700 uppercase tracking-wider">Чистая Прибыль</p>
+              <h2 className="text-2xl font-black text-green-600 mt-1">{dashboardData.profit.toLocaleString('ru-RU')} р</h2>
+            </div>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Налог 20%</p>
+              <h2 className="text-2xl font-black text-gray-700 mt-1">{dashboardData.tax.toLocaleString('ru-RU')} р</h2>
+            </div>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Логистика / Прочие</p>
+              <h2 className="text-xl font-black text-red-500 mt-1">-{dashboardData.logistics.toLocaleString('ru-RU')} / -{dashboardData.penalties.toLocaleString('ru-RU')}</h2>
             </div>
           </div>
-        )}
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+            <h3 className="text-[16px] font-bold text-gray-900 mb-4">Топ-10 товаров по прибыли</h3>
+            <div className="space-y-3">
+              {dashboardData.topProducts.map((p: any, i: number) => (
+                <div key={p.nm_id} className="flex items-center gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
+                  <div className="w-8 font-bold text-gray-400 text-sm">#{i+1}</div>
+                  <div className="flex-1"><p className="font-semibold text-[14px] text-gray-900 truncate max-w-md">{p.title}</p></div>
+                  <div className="w-32 text-right font-bold text-[14px] text-gray-900">{p.profit.toLocaleString('ru-RU')} р</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
-        {/* ВКЛАДКА 2: ДЕТАЛИЗАЦИЯ ПО ШК */}
-        {activeTab === 2 && (
-          <div className="flex flex-col h-full bg-[#F5F5F7]">
-            <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 m-6 rounded-2xl border border-gray-200 shadow-sm flex-shrink-0">
-              <div className="flex items-center gap-4 flex-1">
-                <div className="relative flex-1 max-w-md">
-                  <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input type="text" placeholder="Поиск по ШК, артикулу..." value={detSearchQuery} onChange={(e) => { setDetSearchQuery(e.target.value); setDetDisplayCount(ITEMS_PER_LOAD); }} className="w-full bg-gray-50 border border-gray-200 rounded-xl py-2.5 pl-10 pr-4 text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
-                </div>
-                <div className="flex items-center gap-2 bg-gray-50 px-3 py-2.5 rounded-xl border border-gray-200">
-                  <Filter size={16} className="text-gray-400" />
-                  <select value={detFilterStatus} onChange={e => { setDetFilterStatus(e.target.value); setDetDisplayCount(ITEMS_PER_LOAD); }} className="bg-transparent border-none text-sm font-medium text-gray-700 focus:ring-0 outline-none cursor-pointer">
-                    <option value="All">Все статусы</option>
-                    <option value="Продажа">Продажа</option>
-                    <option value="Отказ / Возврат">Отказ / Возврат</option>
-                    <option value="Возвращен продавцу">Возвращен продавцу</option>
-                    <option value="Логистика / Обработка">Логистика / Обработка</option>
-                    <option value="Сводные расходы">Сводные расходы</option>
-                  </select>
-                </div>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <ArrowUpDown size={18} className="text-gray-500" />
-                </div>
-                <select value={detSortField} onChange={e => { setDetSortField(e.target.value as any); setDetDisplayCount(ITEMS_PER_LOAD); }} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer">
-                  <option value="date">По дате заказа</option><option value="profit">По чистой прибыли</option><option value="sales">По сумме продажи</option><option value="logistics">По логистике</option>
+      {/* ВКЛАДКА 2: ДЕТАЛИЗАЦИЯ ПО ШК */}
+      {activeTab === 2 && (
+        <TableWrapper>
+          <div className="p-3 border-b border-gray-200 flex flex-wrap items-center justify-between gap-4 bg-gray-50">
+            <div className="flex items-center gap-3">
+              <SearchInput value={detSearchQuery} onChange={(v) => { setDetSearchQuery(v); setDetDisplayCount(ITEMS_PER_LOAD); }} placeholder="Поиск по ШК, артикулу..." />
+              <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-lg border border-gray-200 shadow-sm">
+                <Filter size={14} className="text-gray-400" />
+                <select value={detFilterStatus} onChange={e => { setDetFilterStatus(e.target.value); setDetDisplayCount(ITEMS_PER_LOAD); }} className="bg-transparent border-none text-[13px] font-medium text-gray-700 focus:ring-0 outline-none cursor-pointer">
+                  <option value="All">Все статусы</option>
+                  <option value="Продажа">Продажа</option>
+                  <option value="Отмена / Возврат">Отмена / Возврат</option>
+                  <option value="В пути / Обработка">В пути / Обработка</option>
+                  <option value="Возврат брака (К продавцу)">Возврат брака (К продавцу)</option>
+                  <option value="Возврат КГТ продавцу (К продавцу)">Возврат КГТ</option>
+                  <option value="Возврат по МП (К продавцу)">Возврат по МП</option>
+                  <option value="Возвращен продавцу">Возвращен продавцу (Прочее)</option>
+                  <option value="Сводные расходы">Сводные расходы</option>
                 </select>
-                <div className="flex bg-gray-100 rounded-xl p-1">
-                  <button onClick={() => { setDetSortOrder('desc'); setDetDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1.5 text-sm rounded-lg transition-all ${detSortOrder === 'desc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>Убыв.</button>
-                  <button onClick={() => { setDetSortOrder('asc'); setDetDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1.5 text-sm rounded-lg transition-all ${detSortOrder === 'asc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>Возр.</button>
-                </div>
-                <button onClick={() => exportToExcel(processedDetailedItems, 'WB_Detailed_SHK')} className="ml-2 px-4 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-sm font-bold hover:bg-green-100 transition-colors shadow-sm cursor-pointer">Экспорт</button>
               </div>
             </div>
-
-            <div className="mx-6 mb-6 bg-white rounded-2xl border border-gray-200 flex-1 flex flex-col shadow-sm overflow-hidden">
-              <div className="flex-1 overflow-auto">
-                <table className="w-full text-left border-collapse whitespace-nowrap">
-                  <thead className="sticky top-0 bg-white border-b border-gray-200 z-10 shadow-sm">
-                    <tr className="text-[11px] uppercase tracking-widest text-gray-500 font-bold">
-                      <th className="px-4 py-4 w-10"></th>
-                      <th className="px-4 py-4">Дата заказа</th>
-                      <th className="px-4 py-4">ШК (shk_id)</th>
-                      <th className="px-4 py-4">Артикул</th>
-                      <th className="px-4 py-4">Статус</th>
-                      <th className="px-4 py-4 text-right text-blue-800">Продажа</th>
-                      <th className="px-4 py-4 text-right">Логистика</th>
-                      <th className="px-4 py-4 text-right">Прочие</th>
-                      <th className="px-4 py-4 text-right border-l border-gray-200">Себестоимость</th>
-                      <th className="px-4 py-4 text-right">Налог</th>
-                      <th className="px-4 py-4 text-right bg-blue-50/50 text-blue-800">Чистая Прибыль</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {detCurrentItems.length > 0 ? (
-                      detCurrentItems.map((unit: any) => (
-                        <Fragment key={unit.shk_id}>
-                          <tr onClick={() => toggleRow(unit.shk_id)} className={`transition-colors cursor-pointer ${expandedShk === unit.shk_id ? 'bg-blue-50/30' : 'hover:bg-gray-50 bg-white'}`}>
-                            <td className="px-4 py-4 text-gray-400">{expandedShk === unit.shk_id ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</td>
-                            <td className="px-4 py-4 text-sm font-medium text-gray-600">{unit.first_date ? new Date(unit.first_date).toLocaleDateString('ru-RU') : '—'}</td>
-                            <td className="px-4 py-4">{unit.shk_id !== 0 ? <span className="font-mono font-bold text-sm text-gray-700 bg-gray-100 px-2 py-1 rounded">{unit.shk_id}</span> : <span className="text-xs font-bold text-gray-400">—</span>}</td>
-                            <td className="px-4 py-4 min-w-[200px]">
-  <p className="text-sm font-semibold text-gray-900 truncate max-w-[300px]" title={unit.vendorCode || unit.title}>
-    {unit.vendorCode || unit.title}
-  </p>
-</td>
-                            <td className="px-4 py-4">
-                              <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${unit.status === 'Продажа' ? 'bg-green-100 text-green-700' : unit.status.includes('Отказ') ? 'bg-orange-100 text-orange-700' : unit.status === 'Возвращен продавцу' ? 'bg-red-100 text-red-700' : 'bg-gray-200 text-gray-600'}`}>
-                                {unit.status}
-                              </span>
-                            </td>
-                            <td className="px-4 py-4 text-right font-bold text-gray-900">{unit.net_sales !== 0 ? unit.net_sales.toFixed(2) : '-'}</td>
-                            <td className="px-4 py-4 text-right text-red-500">{unit.logistics_amount > 0 ? `-${unit.logistics_amount.toFixed(2)}` : '-'}</td>
-                            <td className="px-4 py-4 text-right text-red-500">{unit.other_expenses > 0 ? `-${unit.other_expenses.toFixed(2)}` : '-'}</td>
-                            
-                            <td className="px-4 py-4 text-right border-l border-gray-200" onClick={(e) => e.stopPropagation()}>
-                              {unit.nm_id !== 0 ? (
-                                unit.cost > 0 ? (
-                                  <div className="group flex flex-col justify-end items-end gap-1 cursor-pointer" onClick={() => handleGoToCatalog(unit.nm_id)}>
-                                    {unit.isLinked && (
-                                      <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-1 rounded flex items-center gap-1 mb-0.5">
-                                        <LinkIcon size={8} /> FIFO
-                                      </span>
-                                    )}
-                                    <div className="flex items-center gap-2">
-                                      <span className={`text-sm font-medium ${!unit.isSold ? 'text-gray-400 line-through decoration-gray-400 opacity-60' : 'text-gray-700'}`} title={!unit.isSold ? "Не вычитается (не продажа)" : "Вычтено из прибыли"}>
-                                        {unit.cost.toFixed(2)}
-                                      </span>
-                                      <Edit2 size={14} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <button onClick={() => handleGoToCatalog(unit.nm_id)} className="flex items-center justify-end gap-1 ml-auto text-[11px] font-bold text-orange-700 bg-orange-100 border border-orange-200 px-2 py-1 rounded hover:bg-orange-200 transition-colors cursor-pointer">
-                                    <AlertCircle size={14} /> Внести цену
-                                  </button>
-                                )
-                              ) : '-'}
-                            </td>
-
-                            <td className="px-4 py-4 text-right text-orange-500">{unit.tax > 0 ? `-${unit.tax.toFixed(2)}` : '-'}</td>
-                            <td className={`px-4 py-4 text-right font-bold text-sm bg-blue-50/10 ${unit.netProfit > 0 ? 'text-green-600' : unit.netProfit < 0 ? 'text-red-600' : 'text-gray-500'}`}>
-                              {unit.netProfit > 0 ? '+' : ''}{unit.netProfit.toFixed(2)} р
-                            </td>
-                          </tr>
-                          
-                          {expandedShk === unit.shk_id && (
-                            <tr className="bg-gray-50/80 border-b border-gray-200">
-                              <td colSpan={11} className="px-8 py-5">
-                                <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
-                                  <h4 className="font-bold text-gray-800 mb-4 text-sm flex items-center gap-2"><List size={16} className="text-blue-500"/> История операций</h4>
-                                  <table className="w-full text-xs text-left">
-                                    <thead className="bg-gray-100 text-gray-500 rounded-lg">
-                                      <tr>
-                                        <th className="p-3 font-bold">Дата операции</th><th className="p-3 font-bold">Обоснование</th>
-                                        <th className="p-3 font-bold">Документ</th><th className="p-3 text-right font-bold">Сумма (ВБ)</th>
-                                        <th className="p-3 text-right font-bold">Логистика</th><th className="p-3 text-right font-bold">Прочие (Штраф/Хранение)</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-gray-50">
-                                      {unit.original_items.map((op: any, i: number) => {
-                                        const otherSum = (op.penalty || 0) + (op.deduction || 0) + (op.acceptance || 0) + (op.storage_fee || 0);
-                                        return (
-                                          <tr key={i} className="hover:bg-gray-50 transition-colors">
-                                            <td className="p-3 font-medium text-gray-700">{new Date(op.rr_dt).toLocaleDateString('ru-RU')}</td>
-                                            <td className="p-3 text-gray-600 font-medium">{op.supplier_oper_name || '-'}</td>
-                                            <td className="p-3 text-gray-600">{op.doc_type_name || '-'}</td>
-                                            <td className="p-3 text-right font-bold text-gray-900">{op.ppvz_for_pay ? op.ppvz_for_pay.toFixed(2) : '-'}</td>
-                                            <td className="p-3 text-right text-red-500">{op.delivery_rub ? `-${op.delivery_rub.toFixed(2)}` : '-'}</td>
-                                            <td className="p-3 text-right text-red-500">{otherSum > 0 ? `-${otherSum.toFixed(2)}` : '-'}</td>
-                                          </tr>
-                                        )
-                                      })}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </Fragment>
-                      ))
-                    ) : (
-                      <tr><td colSpan={11} className="text-center p-10 text-gray-500">Ничего не найдено.</td></tr>
-                    )}
-                  </tbody>
-                </table>
+            <div className="flex items-center gap-3">
+              <select value={detSortField} onChange={e => { setDetSortField(e.target.value as any); setDetDisplayCount(ITEMS_PER_LOAD); }} className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-[13px] text-gray-700 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer shadow-sm">
+                <option value="date">По дате заказа</option><option value="profit">По чистой прибыли</option><option value="sales">По сумме продажи</option><option value="logistics">По логистике</option>
+              </select>
+              <div className="flex bg-gray-200/50 rounded-lg p-1 border border-gray-200">
+                <button onClick={() => { setDetSortOrder('desc'); setDetDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1 text-[12px] rounded-md transition-all ${detSortOrder === 'desc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>Убыв.</button>
+                <button onClick={() => { setDetSortOrder('asc'); setDetDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1 text-[12px] rounded-md transition-all ${detSortOrder === 'asc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>Возр.</button>
               </div>
-              {detHasMore && (
-                <div className="p-4 flex justify-center bg-gray-50 border-t border-gray-200 flex-shrink-0">
-                  <button onClick={() => setDetDisplayCount(prev => prev + ITEMS_PER_LOAD)} className="px-8 py-2 bg-white border border-gray-300 shadow-sm rounded-full text-sm font-bold text-gray-700 hover:bg-gray-100 hover:text-blue-600 transition-all cursor-pointer">Загрузить еще 50 строк...</button>
-                </div>
-              )}
+              <Button variant="success" onClick={() => exportToExcel(processedDetailedItems, 'WB_Detailed_SHK')}>Экспорт</Button>
             </div>
           </div>
-        )}
 
-        {/* ВКЛАДКА 3: АНАЛИТИКА ПО ТОВАРАМ */}
-        {activeTab === 3 && (
+          {detCurrentItems.length === 0 ? (
+            <EmptyState icon={Search} title="Ничего не найдено" description="Попробуйте изменить параметры поиска или фильтры" />
+          ) : (
+            <div className="flex-1 overflow-auto">
+              <table className="w-full text-left border-collapse whitespace-nowrap">
+                <thead className="sticky top-0 z-10 shadow-[0_1px_0_0_#e5e7eb]">
+                  <tr className="text-[11px] uppercase tracking-wider text-gray-500 font-bold bg-gray-50">
+                    <th className="px-4 py-3 w-10 border-b border-gray-200"></th>
+                    <th className="px-4 py-3 border-b border-gray-200">Дата заказа</th>
+                    <th className="px-4 py-3 border-b border-gray-200">ШК (shk_id)</th>
+                    <th className="px-4 py-3 border-b border-gray-200">Артикул</th>
+                    <th className="px-4 py-3 border-b border-gray-200">Статус</th>
+                    <th className="px-4 py-3 text-right text-blue-800 border-b border-gray-200">Продажа</th>
+                    <th className="px-4 py-3 text-right border-b border-gray-200">Логистика</th>
+                    <th className="px-4 py-3 text-right border-b border-gray-200">Прочие</th>
+                    <th className="px-4 py-3 text-right border-l border-b border-gray-200">Себестоимость</th>
+                    <th className="px-4 py-3 text-right border-b border-gray-200">Налог</th>
+                    <th className="px-4 py-3 text-right bg-blue-50/50 text-blue-800 border-b border-gray-200">Чистая Прибыль</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {detCurrentItems.map((unit: any) => (
+                    <Fragment key={unit.shk_id}>
+                      <tr onClick={() => toggleRow(unit.shk_id)} className={`transition-colors cursor-pointer ${expandedShk === unit.shk_id ? 'bg-blue-50/30' : 'hover:bg-gray-50/80 bg-white'}`}>
+                        <td className="px-4 py-3 text-gray-400">{expandedShk === unit.shk_id ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</td>
+                        <td className="px-4 py-3 text-[13px] font-medium text-gray-600">{unit.first_date ? new Date(unit.first_date).toLocaleDateString('ru-RU') : '—'}</td>
+                        <td className="px-4 py-3">{unit.shk_id !== 0 ? <span className="font-mono font-bold text-[12px] text-gray-700 bg-gray-100 px-2 py-0.5 rounded border border-gray-200">{unit.shk_id}</span> : <span className="text-[12px] font-bold text-gray-400">—</span>}</td>
+                        <td className="px-4 py-3 min-w-[200px]">
+                          <p className="text-[13px] font-semibold text-[#1e3a5f] truncate max-w-[300px]" title={unit.vendorCode || unit.title}>
+                            {unit.vendorCode || unit.title}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${
+                            unit.status === 'Продажа' ? 'bg-green-50 text-green-700 border-green-200' : 
+                            unit.status === 'Отмена / Возврат' ? 'bg-orange-50 text-orange-700 border-orange-200' : 
+                            unit.status.includes('Возврат') || unit.status.includes('Возвращен') ? 'bg-red-50 text-red-700 border-red-200' : 
+                            unit.status === 'В пути / Обработка' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                            'bg-gray-100 text-gray-600 border-gray-200'
+                          }`}>
+                            {unit.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-bold text-[13px] text-gray-900">{unit.net_sales !== 0 ? unit.net_sales.toFixed(2) : '-'}</td>
+                        <td className="px-4 py-3 text-right text-[13px] text-red-500">{unit.logistics_amount > 0 ? `-${unit.logistics_amount.toFixed(2)}` : '-'}</td>
+                        <td className="px-4 py-3 text-right text-[13px] text-red-500">{unit.other_expenses > 0 ? `-${unit.other_expenses.toFixed(2)}` : '-'}</td>
+                        
+                        <td className="px-4 py-3 text-right border-l border-gray-100 bg-gray-50/30" onClick={(e) => e.stopPropagation()}>
+                          {unit.nm_id !== 0 ? (
+                            unit.cost > 0 ? (
+                              <div className="group flex flex-col justify-end items-end gap-0.5 cursor-pointer" onClick={() => handleGoToCatalog(unit.nm_id)}>
+                                {unit.isLinked && (
+                                  <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-1 rounded flex items-center gap-1 border border-indigo-100">
+                                    <LinkIcon size={8} /> FIFO
+                                  </span>
+                                )}
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-[13px] font-bold ${!unit.isSold ? 'text-gray-400 line-through decoration-gray-400 opacity-60' : 'text-[#1e3a5f]'}`} title={!unit.isSold ? "Не вычитается (не продажа)" : "Вычтено из прибыли"}>
+                                    {unit.cost.toFixed(2)}
+                                  </span>
+                                  <Edit2 size={12} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                              </div>
+                            ) : (
+                              <button onClick={() => handleGoToCatalog(unit.nm_id)} className="flex items-center justify-end gap-1 ml-auto text-[11px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded hover:bg-orange-100 transition-colors cursor-pointer">
+                                <AlertCircle size={12} /> Внести
+                              </button>
+                            )
+                          ) : '-'}
+                        </td>
+
+                        <td className="px-4 py-3 text-right text-[13px] text-orange-500">{unit.tax > 0 ? `-${unit.tax.toFixed(2)}` : '-'}</td>
+                        <td className={`px-4 py-3 text-right font-bold text-[13px] bg-blue-50/10 ${unit.netProfit > 0 ? 'text-green-600' : unit.netProfit < 0 ? 'text-red-600' : 'text-gray-500'}`}>
+                          {unit.netProfit > 0 ? '+' : ''}{unit.netProfit.toFixed(2)} р
+                        </td>
+                      </tr>
+                      
+                      {expandedShk === unit.shk_id && (
+                        <tr className="bg-gray-50/80 border-b border-gray-200 shadow-inner">
+                          <td colSpan={11} className="px-8 py-4">
+                            <div className="bg-white rounded-lg border border-gray-200 p-4 shadow-sm">
+                              <h4 className="font-bold text-[#1e3a5f] mb-3 text-[13px] flex items-center gap-2"><List size={14} className="text-blue-500"/> История операций (Хронология)</h4>
+                              <table className="w-full text-[12px] text-left">
+                                <thead className="bg-gray-100 text-gray-500 rounded-lg uppercase tracking-wider font-bold">
+                                  <tr>
+                                    <th className="p-2 border-b border-gray-200">Дата операции</th><th className="p-2 border-b border-gray-200">Обоснование</th>
+                                    <th className="p-2 border-b border-gray-200">Документ</th><th className="p-2 text-right border-b border-gray-200">Сумма (ВБ)</th>
+                                    <th className="p-2 text-right border-b border-gray-200">Логистика</th><th className="p-2 text-right border-b border-gray-200">Прочие (Штраф/Хранение)</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-50">
+                                  {unit.original_items.map((op: any, i: number) => {
+                                    const otherSum = (op.penalty || 0) + (op.deduction || 0) + (op.acceptance || 0) + (op.storage_fee || 0);
+                                    return (
+                                      <tr key={i} className="hover:bg-gray-50 transition-colors">
+                                        <td className="p-2 font-medium text-gray-700">{new Date(op.rr_dt).toLocaleDateString('ru-RU')}</td>
+                                        <td className="p-2 text-gray-600">{op.supplier_oper_name || '-'}</td>
+                                        <td className="p-2 text-gray-600">{op.doc_type_name || '-'}</td>
+                                        <td className="p-2 text-right font-bold text-gray-900">{op.ppvz_for_pay ? op.ppvz_for_pay.toFixed(2) : '-'}</td>
+                                        <td className="p-2 text-right text-red-500">{op.delivery_rub ? `-${op.delivery_rub.toFixed(2)}` : '-'}</td>
+                                        <td className="p-2 text-right text-red-500">{otherSum > 0 ? `-${otherSum.toFixed(2)}` : '-'}</td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {detHasMore && (
+            <div className="p-3 flex justify-center bg-white border-t border-gray-200 flex-shrink-0">
+              <Button variant="outline" onClick={() => setDetDisplayCount(prev => prev + ITEMS_PER_LOAD)}>Загрузить еще 50 строк...</Button>
+            </div>
+          )}
+        </TableWrapper>
+      )}
+
+      {/* ВКЛАДКА 3: АНАЛИТИКА ПО ТОВАРАМ */}
+      {activeTab === 3 && (
+        <TableWrapper>
           <div className="overflow-auto flex-1">
             <table className="w-full text-left border-collapse">
-              <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 z-10 shadow-sm">
-                <tr className="text-xs uppercase tracking-widest text-gray-500 font-bold">
-                  <th className="px-6 py-4">Артикул / Название</th>
-                  <th className="px-6 py-4 text-center">Продано шт.</th>
-                  <th className="px-6 py-4 text-center">Возвраты</th>
-                  <th className="px-6 py-4 text-right">Чистая Продажа</th>
-                  <th className="px-6 py-4 text-right bg-blue-50/50">Чистая Прибыль</th>
+              <thead className="sticky top-0 z-10 shadow-[0_1px_0_0_#e5e7eb]">
+                <tr className="text-[11px] uppercase tracking-wider text-gray-500 font-bold bg-gray-50">
+                  <th className="px-6 py-3 border-b border-gray-200">Артикул / Название</th>
+                  <th className="px-6 py-3 text-center border-b border-gray-200">Продано шт.</th>
+                  <th className="px-6 py-3 text-center border-b border-gray-200">Возвраты</th>
+                  <th className="px-6 py-3 text-right border-b border-gray-200">Чистая Продажа</th>
+                  <th className="px-6 py-3 text-right bg-blue-50/50 border-b border-gray-200">Чистая Прибыль</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {productAnalytics.map((p: any) => (
-                  <tr key={p.nm_id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4">
-                      <p className="font-semibold text-gray-900">{p.title}</p>
-                      <p className="text-xs text-gray-500 mt-1">Арт: {p.vendorCode}</p>
+                {productAnalytics.length === 0 ? (
+                  <tr><td colSpan={5}><EmptyState icon={Layers} title="Нет данных" description="Для выбранного периода нет аналитики по товарам" /></td></tr>
+                ) : productAnalytics.map((p: any) => (
+                  <tr key={p.nm_id} className="hover:bg-gray-50/80 transition-colors bg-white">
+                    <td className="px-6 py-3">
+                      <p className="font-semibold text-[13px] text-[#1e3a5f]">{p.title}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5">Арт: {p.vendorCode}</p>
                     </td>
-                    <td className="px-6 py-4 text-center font-bold text-gray-900">{p.soldCount}</td>
-                    <td className="px-6 py-4 text-center font-bold text-orange-500">{p.returnCount}</td>
-                    <td className="px-6 py-4 text-right font-medium text-gray-900">{p.revenue.toLocaleString('ru-RU')} р</td>
-                    <td className={`px-6 py-4 text-right font-bold text-lg bg-blue-50/10 ${p.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{p.profit > 0 ? '+' : ''}{p.profit.toLocaleString('ru-RU')} р</td>
+                    <td className="px-6 py-3 text-center font-bold text-[13px] text-gray-900">{p.soldCount}</td>
+                    <td className="px-6 py-3 text-center font-bold text-[13px] text-orange-500">{p.returnCount}</td>
+                    <td className="px-6 py-3 text-right font-medium text-[13px] text-gray-900">{p.revenue.toLocaleString('ru-RU')} р</td>
+                    <td className={`px-6 py-3 text-right font-bold text-[14px] bg-blue-50/10 ${p.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{p.profit > 0 ? '+' : ''}{p.profit.toLocaleString('ru-RU')} р</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        )}
+        </TableWrapper>
+      )}
 
-        {/* ВКЛАДКА 4: СЫРОЙ ОТЧЕТ */}
-        {activeTab === 4 && (
-          <div className="flex flex-col h-full bg-[#F5F5F7]">
-            <div className="flex flex-wrap md:flex-nowrap items-center justify-between gap-4 bg-white p-4 m-6 rounded-2xl border border-gray-200 shadow-sm flex-shrink-0">
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <Filter size={18} className="text-gray-500" />
-                  <span className="text-sm font-bold text-gray-700">Фильтры:</span>
-                </div>
-                <div className="flex items-center gap-2 bg-gray-50 rounded-xl p-1 border border-gray-100">
-                  <input type="date" value={rawDateStart} onChange={e => { setRawDateStart(e.target.value); setRawDisplayCount(ITEMS_PER_LOAD); }} className="bg-transparent border-none text-sm px-2 py-1 focus:ring-2 focus:ring-blue-500 outline-none rounded-lg cursor-pointer" />
-                  <span className="text-gray-400">—</span>
-                  <input type="date" value={rawDateEnd} onChange={e => { setRawDateEnd(e.target.value); setRawDisplayCount(ITEMS_PER_LOAD); }} className="bg-transparent border-none text-sm px-2 py-1 focus:ring-2 focus:ring-blue-500 outline-none rounded-lg cursor-pointer" />
-                </div>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <ArrowUpDown size={18} className="text-gray-500" />
-                  <span className="text-sm font-bold text-gray-700">Сортировка:</span>
-                </div>
-                <select value={rawSortField} onChange={e => { setRawSortField(e.target.value as any); setRawDisplayCount(ITEMS_PER_LOAD); }} className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 text-sm text-gray-700 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer">
-                  <option value="date">По дате</option><option value="amount">По сумме выплаты</option>
-                </select>
-                <div className="flex bg-gray-100 rounded-xl p-1">
-                  <button onClick={() => { setRawSortOrder('desc'); setRawDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1.5 text-sm rounded-lg transition-all ${rawSortOrder === 'desc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>По убыванию</button>
-                  <button onClick={() => { setRawSortOrder('asc'); setRawDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1.5 text-sm rounded-lg transition-all ${rawSortOrder === 'asc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>По возрастанию</button>
-                </div>
-                <button onClick={() => exportToExcel(processedRawItems, 'WB_Raw_Report')} className="ml-2 px-4 py-2.5 bg-green-50 text-green-700 border border-green-200 rounded-xl text-sm font-bold hover:bg-green-100 transition-colors shadow-sm cursor-pointer">Экспорт</button>
+      {/* ВКЛАДКА 4: СЫРОЙ ОТЧЕТ (EXCEL-ВИД С ФИЛЬТРАМИ) */}
+      {activeTab === 4 && (
+        <TableWrapper>
+          <div className="p-3 border-b border-gray-200 flex flex-wrap items-center justify-between gap-4 bg-gray-50">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-gray-200 shadow-sm">
+                <span className="text-[12px] font-bold text-gray-500">От:</span>
+                <input type="date" value={rawDateStart} onChange={e => { setRawDateStart(e.target.value); setRawDisplayCount(ITEMS_PER_LOAD); }} className="bg-transparent border-none text-[13px] text-gray-700 outline-none cursor-pointer" />
+                <span className="text-gray-300">|</span>
+                <span className="text-[12px] font-bold text-gray-500">До:</span>
+                <input type="date" value={rawDateEnd} onChange={e => { setRawDateEnd(e.target.value); setRawDisplayCount(ITEMS_PER_LOAD); }} className="bg-transparent border-none text-[13px] text-gray-700 outline-none cursor-pointer" />
               </div>
             </div>
-
-            <div className="mx-6 mb-6 bg-white rounded-2xl border border-gray-200 flex-1 flex flex-col shadow-sm overflow-hidden">
-              <div className="flex-1 overflow-auto">
-                <table className="w-full text-left border-collapse whitespace-nowrap text-[11px]">
-                  <thead className="sticky top-0 bg-gray-100 border-b border-gray-300 z-10 shadow-sm">
-                    <tr>
-                      {Object.entries(KEY_TRANSLATIONS).map(([key, label]) => (
-                        <th key={key} className="px-4 py-3 font-bold text-gray-700 border-r border-gray-200 last:border-r-0" title={key}>{label}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {rawCurrentItems.length > 0 ? (
-                      rawCurrentItems.map((item) => (
-                        <tr key={item.rrd_id} className="hover:bg-blue-50/50 transition-colors">
-                          {Object.keys(KEY_TRANSLATIONS).map((key) => (
-                            <td key={key} className="px-4 py-2 border-r border-gray-100 last:border-r-0 text-gray-700">{item[key] !== null && item[key] !== undefined ? String(item[key]) : ''}</td>
-                          ))}
-                        </tr>
-                      ))
-                    ) : (<tr><td colSpan={Object.keys(KEY_TRANSLATIONS).length} className="text-center p-10 text-gray-500 text-sm">Нет данных.</td></tr>)}
-                  </tbody>
-                </table>
+            <div className="flex items-center gap-3">
+              <select value={rawSortField} onChange={e => { setRawSortField(e.target.value as any); setRawDisplayCount(ITEMS_PER_LOAD); }} className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-[13px] text-gray-700 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer shadow-sm">
+                <option value="date">Сортировка по дате</option><option value="amount">Сортировка по сумме</option>
+              </select>
+              <div className="flex bg-gray-200/50 rounded-lg p-1 border border-gray-200">
+                <button onClick={() => { setRawSortOrder('desc'); setRawDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1 text-[12px] rounded-md transition-all ${rawSortOrder === 'desc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>Убыв.</button>
+                <button onClick={() => { setRawSortOrder('asc'); setRawDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1 text-[12px] rounded-md transition-all ${rawSortOrder === 'asc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>Возр.</button>
               </div>
-              {rawHasMore && (
-                <div className="p-4 flex justify-center bg-gray-50 border-t border-gray-200 flex-shrink-0">
-                  <button onClick={() => setRawDisplayCount(prev => prev + ITEMS_PER_LOAD)} className="px-8 py-2 bg-white border border-gray-300 shadow-sm rounded-full text-sm font-bold text-gray-700 hover:bg-gray-100 transition-all cursor-pointer">Загрузить еще 50 строк...</button>
-                </div>
-              )}
+              <Button variant="success" onClick={() => exportToExcel(processedRawItems, 'WB_Raw_Report')}>Экспорт</Button>
             </div>
           </div>
-        )}
-      </div>
+
+          {rawCurrentItems.length === 0 ? (
+            <EmptyState icon={FileSpreadsheet} title="Нет данных" description="Сырой отчет пуст для выбранных параметров" />
+          ) : (
+            <div className="flex-1 overflow-auto">
+              <table className="w-full text-left border-collapse whitespace-nowrap text-[11px]">
+                <thead className="sticky top-0 z-10 shadow-[0_1px_0_0_#e5e7eb] bg-gray-50">
+                  {/* Основные заголовки таблицы */}
+                  <tr className="uppercase tracking-wider text-gray-500 font-bold">
+                    {Object.entries(KEY_TRANSLATIONS).map(([key, label]) => (
+                      <th key={key} className="px-4 py-2 border-r border-b border-gray-200 last:border-r-0" title={key}>{label}</th>
+                    ))}
+                  </tr>
+                  {/* Строка с полями ввода для фильтрации каждого столбца (Excel style) */}
+                  <tr className="bg-white">
+                    {Object.keys(KEY_TRANSLATIONS).map((key) => (
+                      <th key={`filter-${key}`} className="px-2 py-1 border-r border-b border-gray-200 last:border-r-0 font-normal">
+                        <div className="relative flex items-center">
+                          <Search size={10} className="absolute left-2 text-gray-400" />
+                          <input 
+                            type="text" 
+                            className="w-full pl-6 pr-2 py-1 text-[10px] text-gray-700 bg-gray-50 border border-gray-200 rounded focus:bg-white focus:border-blue-400 focus:ring-1 focus:ring-blue-400 outline-none transition-colors placeholder:text-gray-400" 
+                            placeholder="Фильтр..." 
+                            value={rawColumnFilters[key] || ''}
+                            onChange={(e) => handleRawColumnFilterChange(key, e.target.value)}
+                          />
+                        </div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {rawCurrentItems.map((item, idx) => (
+                    <tr key={item.rrd_id || idx} className="hover:bg-blue-50/50 transition-colors bg-white">
+                      {Object.keys(KEY_TRANSLATIONS).map((key) => (
+                        <td key={key} className="px-4 py-2 border-r border-gray-100 last:border-r-0 text-[12px] text-gray-700">
+                          {item[key] !== null && item[key] !== undefined ? String(item[key]) : ''}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {rawHasMore && (
+            <div className="p-3 flex justify-center bg-white border-t border-gray-200 flex-shrink-0">
+              <Button variant="outline" onClick={() => setRawDisplayCount(prev => prev + ITEMS_PER_LOAD)}>Загрузить еще 50 строк...</Button>
+            </div>
+          )}
+        </TableWrapper>
+      )}
 
       {/* Модалка для отсутствующих цен */}
       {isMissingPricesModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm" onClick={() => setIsMissingPricesModalOpen(false)}>
-          <div className="relative w-full max-w-lg bg-white border border-gray-200 rounded-3xl shadow-2xl flex flex-col max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <header className="flex items-center justify-between p-5 border-b border-gray-100 flex-shrink-0 bg-gray-50/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-sm" onClick={() => setIsMissingPricesModalOpen(false)}>
+          <div className="relative w-full max-w-lg bg-white border border-gray-200 rounded-2xl shadow-2xl flex flex-col max-h-[80vh] overflow-hidden animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
+            <header className="flex items-center justify-between p-4 border-b border-gray-100 flex-shrink-0 bg-gray-50">
                 <div className="flex items-center gap-2 text-red-600">
-                    <AlertCircle />
-                    <h2 className="text-lg font-bold text-gray-900">Не указана себестоимость</h2>
+                    <AlertCircle size={18} />
+                    <h2 className="text-[15px] font-bold text-gray-900">Не указана себестоимость</h2>
                 </div>
-                <button onClick={() => setIsMissingPricesModalOpen(false)} className="w-8 h-8 flex items-center justify-center rounded-full bg-white hover:bg-gray-200 text-gray-500 transition-colors shadow-sm cursor-pointer"><X size={18}/></button>
+                <button onClick={() => setIsMissingPricesModalOpen(false)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer"><X size={18}/></button>
             </header>
             
             <div className="flex-grow overflow-y-auto">
-              <div className="bg-orange-50 p-4 text-xs font-medium text-orange-800 border-b border-orange-100">
+              <div className="bg-orange-50 p-3 text-[12px] font-medium text-orange-800 border-b border-orange-100">
                   Внимание! Для корректного расчета прибыли необходимо внести закупочную цену для следующих товаров.
               </div>
               <div className="divide-y divide-gray-100">
                   {missingPriceItems.map((item: any, idx: number) => (
                       <div key={idx} className="flex items-center justify-between p-4 hover:bg-gray-50 transition-colors">
                           <div className="overflow-hidden mr-4">
-                              <div className="font-bold text-gray-800 truncate text-sm" title={item.title}>{item.title}</div>
-                              <div className="text-xs text-gray-500 flex gap-2 mt-1">
+                              <div className="font-bold text-[13px] text-[#1e3a5f] truncate" title={item.title}>{item.title}</div>
+                              <div className="text-[11px] text-gray-500 flex gap-2 mt-1">
                                   <span className="font-mono">Арт: {item.vendorCode}</span>
                                   <span>•</span>
                                   <span>NM: {item.nm_id}</span>
                               </div>
                           </div>
-                          <button onClick={() => handleGoToCatalog(item.nm_id)} className="flex items-center gap-1.5 flex-shrink-0 px-4 py-2 bg-blue-50 border border-blue-100 shadow-sm text-xs font-bold text-blue-600 rounded-xl hover:bg-blue-600 hover:text-white transition-all cursor-pointer">
-                              Внести <ExternalLink size={14} />
-                          </button>
+                          <Button variant="outline" onClick={() => handleGoToCatalog(item.nm_id)} className="flex-shrink-0 !py-1.5 !px-3 text-[12px] text-blue-600 border-blue-200 hover:bg-blue-50">
+                              Внести <ExternalLink size={12} />
+                          </Button>
                       </div>
                   ))}
               </div>
             </div>
-            <div className="p-4 border-t border-gray-100 bg-gray-50 text-center text-xs font-bold text-gray-400 uppercase tracking-widest">
+            <div className="p-3 border-t border-gray-100 bg-gray-50 text-center text-[10px] font-bold text-gray-400 uppercase tracking-widest">
                 Всего товаров без цены: {missingPriceItems.length}
             </div>
           </div>
@@ -730,44 +830,48 @@ export default function Reports() {
 
       {/* Модальное окно загрузки */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setIsModalOpen(false)}>
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden p-8 relative animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setIsModalOpen(false)} className="absolute top-6 right-6 p-2 text-gray-400 hover:text-gray-900 bg-gray-100 rounded-full transition-colors cursor-pointer">
-              <X size={20} />
-            </button>
-            <h3 className="text-2xl font-bold text-gray-900 mb-2">Загрузка отчетов</h3>
-            <p className="text-sm text-gray-500 mb-8">База данных автоматически проверяет дубликаты.</p>
-
-            <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6 mb-6">
-              <button onClick={loadNewReports} disabled={isLoading} className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-md transition-colors disabled:opacity-50 cursor-pointer">
-                {isLoading ? "Загружаем..." : "Авто-загрузка новых отчетов"}
+        <div className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setIsModalOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden relative animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+              <h3 className="text-[16px] font-bold text-[#1e3a5f]">Загрузка отчетов из WB</h3>
+              <button onClick={() => setIsModalOpen(false)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer">
+                <X size={20} />
               </button>
             </div>
+            <div className="p-6">
+              <p className="text-[12px] text-gray-500 mb-6 bg-blue-50/50 p-3 rounded-lg border border-blue-100">База данных автоматически проверяет дубликаты. Безопасно загружать пересекающиеся периоды.</p>
 
-            <div className="text-center relative my-6">
-              <hr className="border-gray-200" />
-              <span className="absolute left-1/2 -translate-x-1/2 -top-3 bg-white px-4 text-xs font-bold text-gray-400 uppercase tracking-widest">ИЛИ ВРУЧНУЮ</span>
-            </div>
-
-            <div>
-              <div className="flex gap-4 mb-4">
-                <div className="flex-1">
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5 ml-1">От даты</label>
-                  <input type="date" value={fetchDateFrom} onChange={(e) => setFetchDateFrom(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-xl py-2 px-3 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer" />
-                </div>
-                <div className="flex-1">
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1.5 ml-1">До даты</label>
-                  <input type="date" value={fetchDateTo} onChange={(e) => setFetchDateTo(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-xl py-2 px-3 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer" />
-                </div>
+              <div className="mb-6">
+                <Button variant="primary" onClick={loadNewReports} disabled={isLoading} className="w-full justify-center !py-2.5 text-[14px]">
+                  {isLoading ? "Загружаем..." : "Авто-загрузка новых отчетов"}
+                </Button>
               </div>
-              <button onClick={loadManualReports} disabled={isLoading} className="w-full py-3 bg-gray-100 text-gray-700 rounded-xl font-bold hover:bg-gray-200 transition-colors disabled:opacity-50 cursor-pointer">
-                Загрузить указанный период
-              </button>
+
+              <div className="text-center relative my-6">
+                <hr className="border-gray-200" />
+                <span className="absolute left-1/2 -translate-x-1/2 -top-2.5 bg-white px-3 text-[10px] font-bold text-gray-400 uppercase tracking-widest">ИЛИ ВРУЧНУЮ</span>
+              </div>
+
+              <div>
+                <div className="flex gap-4 mb-4">
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1.5 ml-1">От даты</label>
+                    <input type="date" value={fetchDateFrom} onChange={(e) => setFetchDateFrom(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-[13px] text-gray-900 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1.5 ml-1">До даты</label>
+                    <input type="date" value={fetchDateTo} onChange={(e) => setFetchDateTo(e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-[13px] text-gray-900 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer" />
+                  </div>
+                </div>
+                <Button variant="outline" onClick={loadManualReports} disabled={isLoading} className="w-full justify-center !py-2.5 text-[14px]">
+                  Загрузить указанный период
+                </Button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-    </div>
+    </PageLayout>
   )
 }
