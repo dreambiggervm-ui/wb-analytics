@@ -11,6 +11,9 @@ import MyWarehouse from './pages/MyWarehouse';
 import Suppliers from './pages/Suppliers'; 
 import SupplierChanges from './pages/SupplierChanges';
 
+import PosTerminal from './pages/PosTerminal';
+import OrdersHistory from './pages/OrdersHistory';
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -29,6 +32,8 @@ export default function App() {
             <Route path="/suppliers" element={<Suppliers />} />
             <Route path="/supplier-changes" element={<SupplierChanges />} />
             <Route path="/supplies-fbs" element={<WbSupplies />} />
+            <Route path="/pos" element={<PosTerminal />} />
+            <Route path="/orders-history" element={<OrdersHistory />} />
           </Routes>
         </main>
       </div>

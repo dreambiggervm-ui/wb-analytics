@@ -1,6 +1,6 @@
 import { useState, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, BarChart3, List, Layers, FileSpreadsheet, X, ChevronDown, ChevronRight, Filter, ArrowUpDown, Search, AlertCircle, Bell, ExternalLink, Edit2, Check } from 'lucide-react';
+import { Download, BarChart3, List, Layers, FileSpreadsheet, X, ChevronDown, ChevronRight, Filter, ArrowUpDown, Search, AlertCircle, Bell, ExternalLink, Edit2, Check, Link as LinkIcon } from 'lucide-react';
 import { fetchFinancialReport } from '../utils/api';
 import { exportToExcel } from '../utils/excel';
 import { db } from '../db';
@@ -53,25 +53,20 @@ export default function Reports() {
   const [isLoading, setIsLoading] = useState(false);
   const [expandedShk, setExpandedShk] = useState<number | null>(null);
   
-  // Даты скачивания
   const [fetchDateFrom, setFetchDateFrom] = useState(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
   const [fetchDateTo, setFetchDateTo] = useState(new Date().toISOString().split('T')[0]);
 
-  // Глобальный фильтр
   const [globalDateStart, setGlobalDateStart] = useState('');
   const [globalDateEnd, setGlobalDateEnd] = useState('');
 
-  // Вкладка 2: Детализация
   const [detDisplayCount, setDetDisplayCount] = useState(ITEMS_PER_LOAD);
   const [detSearchQuery, setDetSearchQuery] = useState('');
   const [detSortField, setDetSortField] = useState<'date' | 'profit' | 'sales' | 'logistics'>('date');
   const [detSortOrder, setDetSortOrder] = useState<'desc' | 'asc'>('desc');
   const [detFilterStatus, setDetFilterStatus] = useState<string>('All');
   
-  // Модалка пустых цен
   const [isMissingPricesModalOpen, setIsMissingPricesModalOpen] = useState(false);
 
-  // Вкладка 4: Сырой отчет
   const [rawDisplayCount, setRawDisplayCount] = useState(ITEMS_PER_LOAD);
   const [rawDateStart, setRawDateStart] = useState('');
   const [rawDateEnd, setRawDateEnd] = useState('');
@@ -81,6 +76,10 @@ export default function Reports() {
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
   const savedProducts = useLiveQuery(() => db.products.toArray()) || [];
   const rawReports = useLiveQuery(() => db.rawReports.toArray()) || [];
+  
+  // НОВОЕ: Подтягиваем склад для FIFO
+  const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
 
   const loadNewReports = async () => {
     if (!token) return alert('API Токен (Статистика) не найден!');
@@ -113,9 +112,72 @@ export default function Reports() {
   };
 
   // ==========================================
-  // АЛГОРИТМ РАСЧЕТА
+  // АЛГОРИТМ РАСЧЕТА (С ДОБАВЛЕНИЕМ FIFO)
   // ==========================================
   const { detailedData, productAnalytics, dashboardData, filteredRawReports, missingPriceItems } = useMemo(() => {
+    
+    // ----------------------------------------------------
+    // НОВЫЙ БЛОК: Подготовка истории FIFO для всех продаж
+    // ----------------------------------------------------
+    const nmReceiptsMap = new Map();
+    wbLinks.forEach(link => {
+      const myItem = myWarehouse.find(m => m.id === link.myStockItemId);
+      if (myItem && myItem.receipts && myItem.receipts.length > 0) {
+        // Клонируем партии, сортируем по дате и добавляем счетчик 'used'
+        const sorted = [...myItem.receipts].sort((a, b) => a.date.localeCompare(b.date)).map(r => ({...r, used: 0}));
+        nmReceiptsMap.set(link.nmId, sorted);
+      }
+    });
+
+    const shkCostMap = new Map();
+    
+    // Сортируем все отчеты хронологически, чтобы списывать партии по очереди
+    const allSales = rawReports.filter(row => {
+      const doc = (row.doc_type_name || "").toLowerCase();
+      const op = (row.supplier_oper_name || "").toLowerCase();
+      return doc === 'продажа' || op.includes('компенсация');
+    }).sort((a, b) => {
+      const dA = (a.order_dt || a.rr_dt || '').split('T')[0] || '9999-12-31';
+      const dB = (b.order_dt || b.rr_dt || '').split('T')[0] || '9999-12-31';
+      return dA.localeCompare(dB);
+    });
+
+    allSales.forEach(sale => {
+      const nmId = sale.nm_id;
+      const shk = sale.shk_id || 0;
+      const date = (sale.order_dt || sale.rr_dt || '').split('T')[0];
+      const qty = sale.quantity || 1;
+
+      let unitCost = 0;
+      const receipts = nmReceiptsMap.get(nmId);
+
+      if (receipts) {
+        let rem = qty;
+        let costSum = 0;
+        for (const r of receipts) {
+          if (rem <= 0) break;
+          // Используем партию, если ее дата <= дате продажи и в ней есть остаток
+          if (r.date <= date && r.used < r.quantity) {
+            const take = Math.min(r.quantity - r.used, rem);
+            r.used += take;
+            costSum += take * r.price;
+            rem -= take;
+          }
+        }
+        // Если партии закончились или продажа была раньше первой партии - берем из ручных цен
+        if (rem > 0) {
+          costSum += rem * getPriceForDate(nmId, date, savedPrices);
+        }
+        unitCost = costSum / qty;
+      } else {
+        unitCost = getPriceForDate(nmId, date, savedPrices);
+      }
+
+      if (shk !== 0) shkCostMap.set(shk, unitCost);
+      shkCostMap.set(`rrd_${sale.rrd_id}`, unitCost);
+    });
+    // ----------------------------------------------------
+
     const shkMap = new Map<number, any>();
     const nmMap = new Map<number, any>();
     
@@ -139,14 +201,13 @@ export default function Reports() {
           vendorCode: row.sa_name || '',
           sale_amount: 0, return_amount: 0, logistics_amount: 0, other_expenses: 0, 
           hasSale: false, hasReturn: false, isReturnedToSeller: false,
-          first_date: null, original_items: []
+          first_date: null, original_items: [], aggregatedCost: 0
         });
       }
 
       const unit = shkMap.get(shk);
       unit.original_items.push(row);
 
-      // Умный поиск артикула
       if (!unit.vendorCode && row.sa_name) unit.vendorCode = row.sa_name;
       if (unit.nm_id === 0 && row.nm_id) unit.nm_id = row.nm_id;
       if ((unit.title === 'Неизвестно' || !unit.title) && row.subject_name) unit.title = row.subject_name;
@@ -170,12 +231,16 @@ export default function Reports() {
       if (operName.includes('брак') || operName.includes('возврат продавцу')) {
         unit.isReturnedToSeller = true;
       }
+
+      // Для сводных операций
+      if (shk === 0 && (docType === 'продажа' || operName.includes('компенсация'))) {
+        unit.aggregatedCost += (shkCostMap.get(`rrd_${row.rrd_id}`) || 0) * (row.quantity || 1);
+      }
     });
 
     const uniqueMissingMap = new Map();
 
     const detailedList = Array.from(shkMap.values()).map(unit => {
-      // Ищем в БД
       const dbProduct = savedProducts.find(p => p.nmID === unit.nm_id);
       if (dbProduct) {
         unit.title = dbProduct.title;
@@ -188,8 +253,15 @@ export default function Reports() {
       else if (unit.hasSale) unit.status = 'Продажа';
       else unit.status = 'Логистика / Обработка';
 
-      unit.cost = unit.nm_id !== 0 ? getPriceForDate(unit.nm_id, unit.first_date, savedPrices) : 0;
+      // НОВОЕ: Назначаем стоимость с учетом FIFO
+      if (unit.shk_id !== 0) {
+         unit.cost = shkCostMap.get(unit.shk_id) !== undefined ? shkCostMap.get(unit.shk_id) : getPriceForDate(unit.nm_id, unit.first_date, savedPrices);
+      } else {
+         unit.cost = unit.aggregatedCost || 0;
+      }
       
+      unit.isLinked = wbLinks.some(l => l.nmId === unit.nm_id);
+
       if (unit.nm_id !== 0 && unit.cost === 0 && !uniqueMissingMap.has(unit.nm_id)) {
         uniqueMissingMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode });
       }
@@ -236,7 +308,7 @@ export default function Reports() {
         logistics: totalLog, penalties: totalOther, tax: totalTax, returnsCount: returnsCount, topProducts: productList.slice(0, 10)
       }
     };
-  }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd]);
+  }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd, myWarehouse, wbLinks]);
 
   // Фильтры Вкладки 2
   const processedDetailedItems = useMemo(() => {
@@ -459,11 +531,18 @@ export default function Reports() {
                             <td className="px-4 py-4 text-right border-l border-gray-200" onClick={(e) => e.stopPropagation()}>
                               {unit.nm_id !== 0 ? (
                                 unit.cost > 0 ? (
-                                  <div className="group flex justify-end items-center gap-2 cursor-pointer" onClick={() => handleGoToCatalog(unit.nm_id)}>
-                                    <span className={`text-sm font-medium ${!unit.isSold ? 'text-gray-400 line-through decoration-gray-400 opacity-60' : 'text-gray-700'}`} title={!unit.isSold ? "Не вычитается (не продажа)" : "Вычтено из прибыли"}>
-                                      {unit.cost.toFixed(2)}
-                                    </span>
-                                    <Edit2 size={14} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                  <div className="group flex flex-col justify-end items-end gap-1 cursor-pointer" onClick={() => handleGoToCatalog(unit.nm_id)}>
+                                    {unit.isLinked && (
+                                      <span className="text-[9px] font-bold text-indigo-500 bg-indigo-50 px-1 rounded flex items-center gap-1 mb-0.5">
+                                        <LinkIcon size={8} /> FIFO
+                                      </span>
+                                    )}
+                                    <div className="flex items-center gap-2">
+                                      <span className={`text-sm font-medium ${!unit.isSold ? 'text-gray-400 line-through decoration-gray-400 opacity-60' : 'text-gray-700'}`} title={!unit.isSold ? "Не вычитается (не продажа)" : "Вычтено из прибыли"}>
+                                        {unit.cost.toFixed(2)}
+                                      </span>
+                                      <Edit2 size={14} className="text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                    </div>
                                   </div>
                                 ) : (
                                   <button onClick={() => handleGoToCatalog(unit.nm_id)} className="flex items-center justify-end gap-1 ml-auto text-[11px] font-bold text-orange-700 bg-orange-100 border border-orange-200 px-2 py-1 rounded hover:bg-orange-200 transition-colors cursor-pointer">

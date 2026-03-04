@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef } from 'react';
 import { Upload, Plus, Minus, PackageSearch, Trash2, Edit3, History, ArrowRight, X, Download, FileSpreadsheet, Save, Filter, Link as LinkIcon, Unlink, Box } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { db, MyStockItem } from '../db';
+import { db, MyStockItem, StockReceipt } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { PageLayout, Toolbar, SearchInput, Button, TableWrapper, EmptyState } from '../components/ui';
 
@@ -20,6 +20,9 @@ export default function MyWarehouse() {
   const [historyItem, setHistoryItem] = useState<MyStockItem | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<Partial<MyStockItem>>({});
+  
+  // НОВОЕ: Состояние для редактирования партий (поступлений)
+  const [editingReceipts, setEditingReceipts] = useState<StockReceipt[]>([]);
   
   // Состояния для привязки ВБ
   const [linkingStockId, setLinkingStockId] = useState<number | null>(null);
@@ -52,9 +55,6 @@ export default function MyWarehouse() {
     return result;
   }, [stockItems, searchQuery, selectedCategory]);
 
-  // =================================================================
-  // ИСПРАВЛЕННЫЙ УМНЫЙ ПОИСК ПО WB (БЕЗ ДУБЛИКАТОВ РАЗМЕРОВ)
-  // =================================================================
   const searchFilteredWbProducts = useMemo(() => {
     let result = wbProducts;
     
@@ -67,7 +67,6 @@ export default function MyWarehouse() {
       );
     }
 
-    // Убираем дубликаты размеров (оставляем только уникальные nmId)
     const uniqueProducts = [];
     const seen = new Set();
     for (const item of result) {
@@ -100,9 +99,6 @@ export default function MyWarehouse() {
     }
   };
 
-  // =================================================================
-  // ЛОГИКА СВЯЗЫВАНИЯ WB
-  // =================================================================
   const handleLinkWb = async (nmId: number) => {
     if (!linkingStockId) return;
     await db.wbLinks.put({ nmId: nmId, myStockItemId: linkingStockId });
@@ -168,6 +164,7 @@ export default function MyWarehouse() {
       if (colTitle === -1) throw new Error('Не найдена колонка "Наименование"');
 
       const now = new Date().toISOString();
+      const todayDate = now.split('T')[0];
       const logsToSave: any[] = [];
       const newItemsToSave: MyStockItem[] = [];
       const itemsToUpdate: MyStockItem[] = [];
@@ -186,7 +183,15 @@ export default function MyWarehouse() {
 
         if (existingItem) {
           let changed = false;
-          const updatedItem = { ...existingItem, category, price, quantity, note: note || existingItem.note };
+          
+          // НОВОЕ: Если остаток увеличился, добавляем это как новую ПАРТИЮ (поступление)
+          const addedQty = quantity - existingItem.quantity;
+          const newReceipts = existingItem.receipts ? [...existingItem.receipts] : [];
+          if (addedQty > 0) {
+            newReceipts.push({ date: todayDate, quantity: addedQty, price: price });
+          }
+
+          const updatedItem = { ...existingItem, category, price, quantity, note: note || existingItem.note, receipts: newReceipts };
 
           if (existingItem.price !== price) {
             logsToSave.push({ itemId: existingItem.id, title, field: 'Опт', oldValue: String(existingItem.price), newValue: String(price), changeDate: now });
@@ -200,7 +205,11 @@ export default function MyWarehouse() {
 
           if (changed || existingItem.category !== category) itemsToUpdate.push(updatedItem);
         } else {
-          newItemsToSave.push({ title, category, price, quantity, note });
+          // НОВОЕ: Для новых товаров сразу создаем первую партию
+          newItemsToSave.push({ 
+            title, category, price, quantity, note,
+            receipts: [{ date: todayDate, quantity, price }]
+          });
         }
       }
 
@@ -216,9 +225,20 @@ export default function MyWarehouse() {
   };
 
   const openManualModal = (item?: MyStockItem) => {
-    if (item) setEditingItem({ ...item });
-    else setEditingItem({ title: '', category: '', price: 0, quantity: 0, note: '' });
+    if (item) {
+      setEditingItem({ ...item });
+      setEditingReceipts(item.receipts || []);
+    } else {
+      setEditingItem({ title: '', category: '', price: 0, quantity: 0, note: '' });
+      setEditingReceipts([{ date: new Date().toISOString().split('T')[0], quantity: 0, price: 0 }]);
+    }
     setIsManualModalOpen(true);
+  };
+
+  const handleReceiptChange = (index: number, field: keyof StockReceipt, value: string) => {
+    const updated = [...editingReceipts];
+    updated[index] = { ...updated[index], [field]: field === 'date' ? value : Number(value) };
+    setEditingReceipts(updated);
   };
 
   const handleSaveManual = async () => {
@@ -230,8 +250,14 @@ export default function MyWarehouse() {
       category: editingItem.category || 'Без категории',
       price: Number(editingItem.price) || 0,
       quantity: Number(editingItem.quantity) || 0,
-      note: editingItem.note || ''
+      note: editingItem.note || '',
+      receipts: editingReceipts.filter(r => r.quantity > 0) // Сохраняем только заполненные партии
     } as MyStockItem;
+
+    if (!itemToSave.id && itemToSave.receipts!.length > 0 && itemToSave.quantity === 0) {
+       itemToSave.quantity = itemToSave.receipts!.reduce((sum, r) => sum + r.quantity, 0);
+       itemToSave.price = itemToSave.receipts![itemToSave.receipts!.length - 1].price;
+    }
 
     if (editingItem.id) {
       const oldItem = stockItems.find(i => i.id === editingItem.id);
@@ -320,7 +346,7 @@ export default function MyWarehouse() {
               <thead className="sticky top-0 z-20">
                 <tr className="text-[11px] uppercase tracking-wider text-gray-500 font-bold bg-gray-50 border-b border-gray-200">
                   <th className="px-5 py-3 sticky left-0 bg-gray-50 z-30 shadow-[1px_0_0_0_#e5e7eb] w-[30%]">Наименование и Категория</th>
-                  <th className="px-5 py-3 border-r border-gray-100 text-right w-[10%]">Опт</th>
+                  <th className="px-5 py-3 border-r border-gray-100 text-right w-[10%]">Опт (Последний)</th>
                   <th className="px-5 py-3 border-r border-gray-100 text-center w-[15%]">Остаток</th>
                   <th className="px-5 py-3 border-r border-gray-100 min-w-[220px]">Связь с ВБ (Карточки)</th>
                   <th className="px-5 py-3 text-center w-[15%]">Действия</th>
@@ -332,6 +358,8 @@ export default function MyWarehouse() {
                     .filter(l => l.myStockItemId === item.id)
                     .map(l => wbProducts.find(p => p.nmId === l.nmId))
                     .filter(Boolean);
+                    
+                  const latestReceipt = item.receipts && item.receipts.length > 0 ? item.receipts[item.receipts.length - 1] : null;
 
                   return (
                     <tr key={item.id} className="hover:bg-gray-50/80 transition-colors bg-white group">
@@ -346,7 +374,10 @@ export default function MyWarehouse() {
                         </div>
                       </td>
                       <td className="px-5 py-3 border-r border-gray-100 text-right align-middle">
-                        <span className="text-[14px] font-bold text-gray-800">{item.price ? `${item.price} ₽` : '0 ₽'}</span>
+                        <div className="flex flex-col items-end">
+                          <span className="text-[14px] font-bold text-gray-800">{latestReceipt ? `${latestReceipt.price} ₽` : (item.price ? `${item.price} ₽` : '0 ₽')}</span>
+                          {latestReceipt && <span className="text-[10px] text-gray-400 mt-0.5">от {new Date(latestReceipt.date).toLocaleDateString('ru-RU')}</span>}
+                        </div>
                       </td>
                       <td className="px-5 py-3 border-r border-gray-100 text-center align-middle">
                         <div className="flex items-center justify-center gap-2">
@@ -447,36 +478,64 @@ export default function MyWarehouse() {
         </div>
       )}
 
-      {/* ОСТАЛЬНЫЕ ОКНА РЕДАКТИРОВАНИЯ И ИСТОРИИ */}
+      {/* МОДАЛЬНОЕ ОКНО РЕДАКТИРОВАНИЯ С ПАРТИЯМИ */}
       {isManualModalOpen && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-200">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
               <h3 className="text-[16px] font-bold text-[#1e3a5f]">{editingItem.id ? 'Редактировать товар' : 'Добавить товар'}</h3>
               <button onClick={() => setIsManualModalOpen(false)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"><X size={20} /></button>
             </div>
             
-            <div className="p-6 space-y-4">
+            <div className="p-6 overflow-y-auto space-y-4">
               <div>
                 <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Наименование *</label>
                 <input type="text" value={editingItem.title || ''} onChange={e => setEditingItem({...editingItem, title: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
               </div>
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Категория</label>
-                <input type="text" list="categoryList" value={editingItem.category || ''} onChange={e => setEditingItem({...editingItem, category: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
-                <datalist id="categoryList">{uniqueCategories.map(cat => <option key={cat} value={cat} />)}</datalist>
-              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Опт (Цена, ₽)</label>
-                  <input type="number" min="0" step="0.01" value={editingItem.price === 0 ? '' : editingItem.price} onChange={e => setEditingItem({...editingItem, price: parseFloat(e.target.value) || 0})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
+                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Категория</label>
+                  <input type="text" list="categoryList" value={editingItem.category || ''} onChange={e => setEditingItem({...editingItem, category: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
+                  <datalist id="categoryList">{uniqueCategories.map(cat => <option key={cat} value={cat} />)}</datalist>
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Остаток (ШТ)</label>
-                  <input type="number" min="0" value={editingItem.quantity === 0 ? '' : editingItem.quantity} onChange={e => setEditingItem({...editingItem, quantity: parseInt(e.target.value, 10) || 0})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
+                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">ТЕКУЩИЙ Остаток (ШТ)</label>
+                  <input type="number" min="0" value={editingItem.quantity === 0 ? '' : editingItem.quantity} onChange={e => setEditingItem({...editingItem, quantity: parseInt(e.target.value, 10) || 0})} className="w-full bg-white border border-blue-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-900" placeholder="0" title="Общий физический остаток на полке" />
                 </div>
               </div>
-              <div>
+              
+              {/* НОВОЕ: БЛОК ИСТОРИИ ПОСТУПЛЕНИЙ */}
+              <div className="mt-4 pt-4 border-t border-gray-100">
+                <div className="flex justify-between items-center mb-3">
+                  <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest">История поступлений (Партии)</label>
+                  <button type="button" onClick={() => setEditingReceipts([...editingReceipts, { date: new Date().toISOString().split('T')[0], quantity: 0, price: 0 }])} className="text-[11px] text-blue-600 font-bold hover:underline bg-blue-50 px-2 py-1 rounded">
+                    + Добавить партию
+                  </button>
+                </div>
+                
+                <div className="space-y-2">
+                  {editingReceipts.map((r, idx) => (
+                    <div key={idx} className="flex gap-2 items-center bg-gray-50 p-2 rounded-lg border border-gray-200">
+                      <div className="flex-1">
+                        <span className="text-[9px] text-gray-400 font-bold uppercase ml-1">Дата</span>
+                        <input type="date" value={r.date} onChange={e => handleReceiptChange(idx, 'date', e.target.value)} className="w-full bg-white border border-gray-200 rounded p-1.5 text-[12px] outline-none" />
+                      </div>
+                      <div className="w-20">
+                        <span className="text-[9px] text-gray-400 font-bold uppercase ml-1">Шт</span>
+                        <input type="number" min="0" value={r.quantity || ''} onChange={e => handleReceiptChange(idx, 'quantity', e.target.value)} placeholder="0" className="w-full bg-white border border-gray-200 rounded p-1.5 text-[12px] outline-none text-center" />
+                      </div>
+                      <div className="w-24">
+                        <span className="text-[9px] text-gray-400 font-bold uppercase ml-1">Цена (₽)</span>
+                        <input type="number" min="0" step="0.01" value={r.price || ''} onChange={e => handleReceiptChange(idx, 'price', e.target.value)} placeholder="0" className="w-full bg-white border border-gray-200 rounded p-1.5 text-[12px] outline-none text-right" />
+                      </div>
+                      <button type="button" onClick={() => setEditingReceipts(editingReceipts.filter((_, i) => i !== idx))} className="mt-4 p-1.5 text-gray-400 hover:text-red-500 rounded"><Trash2 size={16}/></button>
+                    </div>
+                  ))}
+                  {editingReceipts.length === 0 && <div className="text-center text-[12px] text-gray-400 py-2 italic">Нет партий</div>}
+                </div>
+              </div>
+
+              <div className="pt-2">
                 <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">Примечание</label>
                 <input type="text" value={editingItem.note || ''} onChange={e => setEditingItem({...editingItem, note: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-blue-500 outline-none" />
               </div>

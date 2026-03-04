@@ -1,22 +1,31 @@
 import { useState, useRef } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, Warehouse, Box, Truck, History, Download, UploadCloud } from 'lucide-react';
+import { Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, Warehouse, Box, Truck, History, Download, UploadCloud, ShoppingCart, Archive, Briefcase } from 'lucide-react';
 import { db } from '../db';
 
 export default function Sidebar() {
   const [isWbMenuOpen, setIsWbMenuOpen] = useState(true);
   const [isStockMenuOpen, setIsStockMenuOpen] = useState(true);
+  const [isSalesMenuOpen, setIsSalesMenuOpen] = useState(true); // НОВОЕ: состояние для меню продаж
+  
   const location = useLocation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const isWbActive = ['/', '/catalog', '/reports', '/stocks'].includes(location.pathname);
+  const isWbActive = ['/', '/catalog', '/reports', '/stocks', '/supplies-fbs'].includes(location.pathname);
   const isStockActive = ['/my-warehouse', '/suppliers', '/supplier-changes'].includes(location.pathname);
+  const isSalesActive = ['/pos', '/orders-history'].includes(location.pathname); // НОВОЕ
 
   const wbMenuItems = [
     { name: 'Каталог', icon: <Package size={18} />, path: '/catalog' },
     { name: 'Отчеты', icon: <BarChart3 size={18} />, path: '/reports' },
     { name: 'Остатки (FBS)', icon: <Layers size={18} />, path: '/stocks' },
     { name: 'Поставки (Сборка)', icon: <Truck size={18} />, path: '/supplies-fbs' },
+  ];
+
+  // НОВОЕ: Пункты меню для продаж
+  const salesMenuItems = [
+    { name: 'Касса (Отгрузка)', icon: <ShoppingCart size={18} />, path: '/pos' },
+    { name: 'Архив продаж', icon: <Archive size={18} />, path: '/orders-history' },
   ];
 
   const stockMenuItems = [
@@ -93,7 +102,7 @@ export default function Sidebar() {
         <span className="text-xl font-semibold text-gray-900 tracking-tight">Analytics</span>
       </div>
 
-      <nav className="flex-1 px-4 mt-2 overflow-y-auto pb-4 space-y-4">
+      <nav className="flex-1 px-4 mt-2 overflow-y-auto pb-4 space-y-4 scrollbar-hide">
         
         {/* Категория: Wildberries */}
         <div>
@@ -107,6 +116,26 @@ export default function Sidebar() {
           <div className={`overflow-hidden transition-all duration-300 ${isWbMenuOpen ? 'max-h-64 mt-1 opacity-100' : 'max-h-0 opacity-0'}`}>
             <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1 py-1">
               {wbMenuItems.map((item) => (
+                <NavLink key={item.name} to={item.path} className={({ isActive }) => `flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-[13px] transition-colors ${isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>
+                  {item.icon} {item.name}
+                </NavLink>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* НОВОЕ: Категория: Прямые продажи */}
+        <div>
+          <button onClick={() => setIsSalesMenuOpen(!isSalesMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isSalesActive && !isSalesMenuOpen ? 'bg-blue-50 text-blue-700' : 'text-gray-800 hover:bg-gray-50'}`}>
+            <div className="flex items-center gap-3">
+              <Briefcase size={20} className={isSalesActive && !isSalesMenuOpen ? "text-blue-600" : "text-gray-500"} />
+              Прямые Продажи
+            </div>
+            {isSalesMenuOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          </button>
+          <div className={`overflow-hidden transition-all duration-300 ${isSalesMenuOpen ? 'max-h-64 mt-1 opacity-100' : 'max-h-0 opacity-0'}`}>
+            <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1 py-1">
+              {salesMenuItems.map((item) => (
                 <NavLink key={item.name} to={item.path} className={({ isActive }) => `flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-[13px] transition-colors ${isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>
                   {item.icon} {item.name}
                 </NavLink>
