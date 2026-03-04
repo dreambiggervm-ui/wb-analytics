@@ -1,19 +1,20 @@
 import { useState, useRef } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, Warehouse, Box, Truck, History, Download, UploadCloud, ShoppingCart, Archive, Briefcase } from 'lucide-react';
+import { Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, Warehouse, Box, Truck, History, Download, UploadCloud, ShoppingCart, Archive, Briefcase, Save } from 'lucide-react';
 import { db } from '../db';
+import { SyncService } from '../utils/syncService'; // Подключаем наш новый сервис
 
 export default function Sidebar() {
   const [isWbMenuOpen, setIsWbMenuOpen] = useState(true);
   const [isStockMenuOpen, setIsStockMenuOpen] = useState(true);
-  const [isSalesMenuOpen, setIsSalesMenuOpen] = useState(true); // НОВОЕ: состояние для меню продаж
+  const [isSalesMenuOpen, setIsSalesMenuOpen] = useState(true);
   
   const location = useLocation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isWbActive = ['/', '/catalog', '/reports', '/stocks', '/supplies-fbs'].includes(location.pathname);
   const isStockActive = ['/my-warehouse', '/suppliers', '/supplier-changes'].includes(location.pathname);
-  const isSalesActive = ['/pos', '/orders-history'].includes(location.pathname); // НОВОЕ
+  const isSalesActive = ['/pos', '/orders-history'].includes(location.pathname);
 
   const wbMenuItems = [
     { name: 'Каталог', icon: <Package size={18} />, path: '/catalog' },
@@ -22,7 +23,6 @@ export default function Sidebar() {
     { name: 'Поставки (Сборка)', icon: <Truck size={18} />, path: '/supplies-fbs' },
   ];
 
-  // НОВОЕ: Пункты меню для продаж
   const salesMenuItems = [
     { name: 'Касса (Отгрузка)', icon: <ShoppingCart size={18} />, path: '/pos' },
     { name: 'Архив продаж', icon: <Archive size={18} />, path: '/orders-history' },
@@ -34,13 +34,9 @@ export default function Sidebar() {
     { name: 'Изменения', icon: <History size={18} />, path: '/supplier-changes' },
   ];
 
-  // ==========================================
-  // ЛОГИКА ЭКСПОРТА (СКАЧАТЬ БЭКАП)
-  // ==========================================
   const handleExport = async () => {
     try {
       const allData: Record<string, any[]> = {};
-      // Проходимся по всем таблицам в базе и собираем данные
       for (const table of db.tables) {
         allData[table.name] = await table.toArray();
       }
@@ -58,9 +54,6 @@ export default function Sidebar() {
     }
   };
 
-  // ==========================================
-  // ЛОГИКА ИМПОРТА (ВОССТАНОВИТЬ БЭКАП)
-  // ==========================================
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -70,7 +63,6 @@ export default function Sidebar() {
       try {
         const data = JSON.parse(event.target?.result as string);
         
-        // Запускаем транзакцию: очищаем старые данные и заливаем новые
         await db.transaction('rw', db.tables, async () => {
           for (const table of db.tables) {
             if (data[table.name]) {
@@ -81,7 +73,7 @@ export default function Sidebar() {
         });
         
         alert('Резервная копия успешно восстановлена!');
-        window.location.reload(); // Перезагружаем страницу, чтобы интерфейс обновился
+        window.location.reload();
       } catch (err) {
         console.error(err);
         alert('Ошибка при чтении файла резервной копии. Убедитесь, что это правильный .json файл.');
@@ -89,7 +81,6 @@ export default function Sidebar() {
     };
     reader.readAsText(file);
     
-    // Сбрасываем инпут
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -104,7 +95,6 @@ export default function Sidebar() {
 
       <nav className="flex-1 px-4 mt-2 overflow-y-auto pb-4 space-y-4 scrollbar-hide">
         
-        {/* Категория: Wildberries */}
         <div>
           <button onClick={() => setIsWbMenuOpen(!isWbMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isWbActive && !isWbMenuOpen ? 'bg-blue-50 text-blue-700' : 'text-gray-800 hover:bg-gray-50'}`}>
             <div className="flex items-center gap-3">
@@ -124,7 +114,6 @@ export default function Sidebar() {
           </div>
         </div>
 
-        {/* НОВОЕ: Категория: Прямые продажи */}
         <div>
           <button onClick={() => setIsSalesMenuOpen(!isSalesMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isSalesActive && !isSalesMenuOpen ? 'bg-blue-50 text-blue-700' : 'text-gray-800 hover:bg-gray-50'}`}>
             <div className="flex items-center gap-3">
@@ -144,7 +133,6 @@ export default function Sidebar() {
           </div>
         </div>
 
-        {/* Категория: Склад */}
         <div>
           <button onClick={() => setIsStockMenuOpen(!isStockMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isStockActive && !isStockMenuOpen ? 'bg-blue-50 text-blue-700' : 'text-gray-800 hover:bg-gray-50'}`}>
             <div className="flex items-center gap-3">
@@ -165,10 +153,18 @@ export default function Sidebar() {
         </div>
       </nav>
 
-      {/* БЛОК РЕЗЕРВНОГО КОПИРОВАНИЯ ВНИЗУ МЕНЮ */}
       <div className="p-4 border-t border-gray-100 bg-gray-50/50">
         <h4 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-3 px-2">Данные (Резерв)</h4>
         <div className="space-y-2">
+          
+          {/* НОВАЯ КНОПКА СОХРАНЕНИЯ В ПАПКУ ПРОЕКТА */}
+          <button 
+            onClick={() => SyncService.syncAllToServer()}
+            className="w-full flex items-center gap-3 px-3 py-2 bg-white border border-green-200 rounded-lg text-[13px] font-bold text-green-700 hover:bg-green-50 hover:text-green-800 transition-colors shadow-sm"
+          >
+            <Save size={16} /> В папку (SQLite)
+          </button>
+
           <button 
             onClick={handleExport}
             className="w-full flex items-center gap-3 px-3 py-2 bg-white border border-gray-200 rounded-lg text-[13px] font-bold text-gray-700 hover:bg-blue-50 hover:text-blue-700 hover:border-blue-200 transition-colors shadow-sm"
