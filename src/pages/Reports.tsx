@@ -1,6 +1,6 @@
 import { useState, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, BarChart3, List, Layers, FileSpreadsheet, X, ChevronDown, ChevronRight, Filter, AlertCircle, Bell, ExternalLink, Edit2, Check, Link as LinkIcon, Search, Trash2 } from 'lucide-react';
+import { Download, BarChart3, List, Layers, FileSpreadsheet, X, ChevronDown, ChevronRight, Filter, AlertCircle, Bell, ExternalLink, Edit2, Link as LinkIcon, Search, Trash2, FileOutput } from 'lucide-react';
 import { fetchFinancialReport } from '../utils/api';
 import { exportToExcel } from '../utils/excel';
 import { db } from '../db';
@@ -68,12 +68,19 @@ export default function Reports() {
   
   const [isMissingPricesModalOpen, setIsMissingPricesModalOpen] = useState(false);
 
+  // Стейты для просмотра сырого отчета в таблице
   const [rawDisplayCount, setRawDisplayCount] = useState(ITEMS_PER_LOAD);
   const [rawDateStart, setRawDateStart] = useState('');
   const [rawDateEnd, setRawDateEnd] = useState('');
   const [rawSortField, setRawSortField] = useState<'date' | 'amount'>('date');
   const [rawSortOrder, setRawSortOrder] = useState<'desc' | 'asc'>('desc');
   const [rawColumnFilters, setRawColumnFilters] = useState<Record<string, string>>({});
+
+  // НОВЫЕ СТЕЙТЫ: Для модального окна экспорта сырого отчета
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportDateFrom, setExportDateFrom] = useState('');
+  const [exportDateTo, setExportDateTo] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
 
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
   const savedProducts = useLiveQuery(() => db.products.toArray()) || [];
@@ -131,12 +138,63 @@ export default function Reports() {
     setRawDisplayCount(ITEMS_PER_LOAD);
   };
 
+  // ФУНКЦИЯ ЭКСПОРТА ИЗ МОДАЛКИ
+  const handleGenerateExport = async () => {
+    setIsExporting(true);
+    
+    // Даем React время обновить UI (показать лоадер) перед тяжелой операцией
+    setTimeout(() => {
+      try {
+        let dataToExport = [...rawReports];
+        
+        // Фильтруем по периоду из модалки (если даты выбраны)
+        if (exportDateFrom || exportDateTo) {
+          dataToExport = dataToExport.filter(item => {
+            const date = (item.rr_dt || item.create_dt || '').split('T')[0];
+            if (!date) return false;
+            if (exportDateFrom && date < exportDateFrom) return false;
+            if (exportDateTo && date > exportDateTo) return false;
+            return true;
+          });
+        }
+
+        if (dataToExport.length === 0) {
+          alert('Нет данных для выгрузки за выбранный период');
+          setIsExporting(false);
+          return;
+        }
+
+        // Формируем красивый Excel-объект
+        const excelData = dataToExport.map(row => {
+          const formattedRow: any = {};
+          Object.keys(KEY_TRANSLATIONS).forEach(key => {
+            formattedRow[KEY_TRANSLATIONS[key]] = row[key] !== null && row[key] !== undefined ? row[key] : '';
+          });
+          return formattedRow;
+        });
+
+        // Скачиваем
+        const fileName = `WB_Raw_Report_${exportDateFrom || 'all'}_${exportDateTo || 'all'}`;
+        exportToExcel(excelData, fileName);
+        
+        // Закрываем модалку и сбрасываем состояние
+        setIsExportModalOpen(false);
+        setExportDateFrom('');
+        setExportDateTo('');
+      } catch (error) {
+        console.error("Ошибка при формировании отчета:", error);
+        alert('Произошла ошибка при формировании файла.');
+      } finally {
+        setIsExporting(false);
+      }
+    }, 100); // 100ms задержка для рендеринга
+  };
+
   // ==========================================
   // АЛГОРИТМ РАСЧЕТА С ХРОНОЛОГИЕЙ И FIFO
   // ==========================================
   const { detailedData, productAnalytics, dashboardData, filteredRawReports, missingPriceItems } = useMemo(() => {
     
-    // Подготовка истории FIFO
     const nmReceiptsMap = new Map();
     wbLinks.forEach((link: any) => {
       const myItem = myWarehouse.find(m => m.id === link.myStockItemId);
@@ -148,7 +206,6 @@ export default function Reports() {
 
     const shkCostMap = new Map();
     
-    // Сортировка продаж для FIFO
     const allSales = rawReports.filter(row => {
       const doc = (row.doc_type_name || "").toLowerCase();
       const op = (row.supplier_oper_name || "").toLowerCase();
@@ -195,7 +252,9 @@ export default function Reports() {
     const shkMap = new Map<number, any>();
     const nmMap = new Map<number, any>();
     
-    let totalSales = 0, totalLog = 0, totalOther = 0, totalCost = 0, totalTax = 0, returnsCount = 0;
+    // Новые количественные счетчики
+    let totalSales = 0, totalLog = 0, totalOther = 0, totalCost = 0, totalTax = 0;
+    let shippedQty = 0, soldQty = 0, returnedQty = 0;
 
     const filteredRaw = rawReports.filter(row => {
       if (!globalDateStart && !globalDateEnd) return true;
@@ -207,6 +266,17 @@ export default function Reports() {
     });
 
     filteredRaw.forEach(row => {
+      // Сбор количественных метрик
+      shippedQty += (row.delivery_amount || 0);
+      returnedQty += (row.return_amount || 0);
+      
+      const docType = (row.doc_type_name || "").toLowerCase();
+      const operName = (row.supplier_oper_name || "").toLowerCase();
+      
+      if (docType === 'продажа' || operName.includes('компенсация')) {
+        soldQty += (row.quantity || 1);
+      }
+
       const shk = row.shk_id || 0; 
       if (!shkMap.has(shk)) {
         shkMap.set(shk, {
@@ -232,8 +302,6 @@ export default function Reports() {
         unit.first_date = opDate;
       }
 
-      const docType = (row.doc_type_name || "").toLowerCase();
-      const operName = (row.supplier_oper_name || "").toLowerCase();
       const ppvz = row.ppvz_for_pay || 0;
 
       if (docType === 'продажа') { unit.sale_amount += ppvz; } 
@@ -241,7 +309,7 @@ export default function Reports() {
       else if (operName.includes('компенсация')) { unit.sale_amount += ppvz; }
 
       unit.logistics_amount += row.delivery_rub || 0;
-      unit.other_expenses += (row.penalty || 0) + (row.deduction || 0) + (row.acceptance || 0) + (row.storage_fee || 0);
+      unit.other_expenses += (row.penalty || 0) + (row.deduction || 0) + (row.acceptance || 0) + (row.storage_fee || 0) + (row.rebill_logistic_cost || 0);
 
       if (shk === 0 && (docType === 'продажа' || operName.includes('компенсация'))) {
         unit.aggregatedCost += (shkCostMap.get(`rrd_${row.rrd_id}`) || 0) * (row.quantity || 1);
@@ -257,59 +325,35 @@ export default function Reports() {
         if (!unit.vendorCode) unit.vendorCode = dbProduct.vendorCode;
       }
 
-      // 1. Сортируем все операции данного ШК по дате (хронология)
       unit.original_items.sort((a: any, b: any) => new Date(a.rr_dt).getTime() - new Date(b.rr_dt).getTime());
 
       let finalStatus = 'В пути / Обработка';
 
-      // 2. Идем по истории операций
       unit.original_items.forEach((op: any) => {
         const docType = (op.doc_type_name || '').toLowerCase();
         const operName = (op.supplier_oper_name || '').toLowerCase();
         const bonusName = (op.bonus_type_name || '').toLowerCase();
 
-        // Поехала к клиенту
-        if (operName.includes('к клиенту при продаже')) {
-           finalStatus = 'В пути / Обработка'; 
-        }
-        
-        // Выкуп / Компенсация
-        if (docType === 'продажа' || operName.includes('компенсация')) {
-           finalStatus = 'Продажа';
-        }
+        if (operName.includes('к клиенту при продаже')) finalStatus = 'В пути / Обработка'; 
+        if (docType === 'продажа' || operName.includes('компенсация')) finalStatus = 'Продажа';
+        if (operName.includes('от клиента при отмене') || operName.includes('к клиенту при отмене') || docType === 'возврат') finalStatus = 'Отмена / Возврат';
 
-        // Отказ / Возврат
-        if (operName.includes('от клиента при отмене') || operName.includes('к клиенту при отмене') || docType === 'возврат') {
-           finalStatus = 'Отмена / Возврат';
-        }
-
-        // Возвраты продавцу
-        if (operName.includes('возврат брака') || bonusName.includes('возврат брака')) {
-           finalStatus = 'Возврат брака (К продавцу)';
-        } else if (operName.includes('возврат кгт') || bonusName.includes('возврат кгт')) {
-           finalStatus = 'Возврат КГТ продавцу (К продавцу)';
-        } else if (operName.includes('приехал по мп') || bonusName.includes('приехал по мп')) {
-           finalStatus = 'Возврат по МП (К продавцу)';
-        } else if (operName.includes('возврат продавцу') || bonusName.includes('возврат продавцу')) {
-           finalStatus = 'Возвращен продавцу';
-        }
+        if (operName.includes('возврат брака') || bonusName.includes('возврат брака')) finalStatus = 'Возврат брака (К продавцу)';
+        else if (operName.includes('возврат кгт') || bonusName.includes('возврат кгт')) finalStatus = 'Возврат КГТ продавцу (К продавцу)';
+        else if (operName.includes('приехал по мп') || bonusName.includes('приехал по мп')) finalStatus = 'Возврат по МП (К продавцу)';
+        else if (operName.includes('возврат продавцу') || bonusName.includes('возврат продавцу')) finalStatus = 'Возвращен продавцу';
       });
 
-      // 3. Финальное присвоение статуса
-      if (unit.shk_id === 0) {
-        unit.status = 'Сводные расходы';
-      } else {
-        unit.status = finalStatus;
-      }
+      if (unit.shk_id === 0) unit.status = 'Сводные расходы';
+      else unit.status = finalStatus;
 
-      // Присвоение стоимости: даже если это не продажа, пытаемся получить цену со склада или ручную
       if (unit.shk_id !== 0) {
          if (shkCostMap.get(unit.shk_id) !== undefined) {
              unit.cost = shkCostMap.get(unit.shk_id);
          } else {
              const receipts = nmReceiptsMap.get(unit.nm_id);
              if (receipts && receipts.length > 0) {
-                 unit.cost = receipts[receipts.length - 1].price; // Резервное значение для отображения
+                 unit.cost = receipts[receipts.length - 1].price;
              } else {
                  unit.cost = getPriceForDate(unit.nm_id, unit.first_date, savedPrices);
              }
@@ -325,8 +369,6 @@ export default function Reports() {
       }
 
       unit.net_sales = unit.sale_amount - unit.return_amount;
-
-      // СЕБЕСТОИМОСТЬ ВЫЧИТАЕТСЯ ТОЛЬКО ЕСЛИ ПРОДАЖА > 0.
       const isSold = unit.status === 'Продажа' && unit.net_sales > 0;
       unit.isSold = isSold;
 
@@ -341,7 +383,6 @@ export default function Reports() {
       totalOther += unit.other_expenses;
       totalCost += costToDeduct;
       totalTax += unit.tax;
-      if (unit.status === 'Отмена / Возврат') returnsCount++;
 
       if (unit.nm_id !== 0) {
         if (!nmMap.has(unit.nm_id)) {
@@ -365,8 +406,17 @@ export default function Reports() {
       detailedData: detailedList,
       productAnalytics: productList,
       dashboardData: {
-        sales: totalSales, wb_payout: finalTotalPayout, profit: finalTotalPayout - totalCost - totalTax,
-        logistics: totalLog, penalties: totalOther, tax: totalTax, returnsCount: returnsCount, topProducts: productList.slice(0, 10)
+        sales: totalSales, 
+        wb_payout: finalTotalPayout, 
+        profit: finalTotalPayout - totalCost - totalTax,
+        logistics: totalLog, 
+        penalties: totalOther, 
+        tax: totalTax,
+        shippedQty,
+        soldQty,
+        returnedQty,
+        topProducts: productList.slice(0, 10),
+        topShks: detailedList.slice(0, 10)
       }
     };
   }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd, myWarehouse, wbLinks]);
@@ -396,11 +446,11 @@ export default function Reports() {
   const detCurrentItems = processedDetailedItems.slice(0, detDisplayCount);
   const detHasMore = detDisplayCount < processedDetailedItems.length;
 
-  // Фильтры Вкладки 4 (Сырой отчет) - с поиском по столбцам
+  // Фильтры Вкладки 4
   const processedRawItems = useMemo(() => {
     let result = [...filteredRawReports];
     
-    // 1. Фильтр по периоду
+    // Внутри таблицы оставляем локальные фильтры
     if (rawDateStart || rawDateEnd) {
       result = result.filter(item => {
         const date = (item.rr_dt || item.create_dt || '').split('T')[0];
@@ -411,7 +461,6 @@ export default function Reports() {
       });
     }
 
-    // 2. Фильтры по столбцам (Excel style)
     Object.entries(rawColumnFilters).forEach(([key, searchVal]) => {
       if (!searchVal) return;
       const lowerSearch = searchVal.toLowerCase();
@@ -421,7 +470,6 @@ export default function Reports() {
       });
     });
 
-    // 3. Сортировка
     result.sort((a, b) => {
       let valA: any, valB: any;
       if (rawSortField === 'date') {
@@ -494,23 +542,35 @@ export default function Reports() {
         )}
       </div>
 
-      {/* КОНТЕНТ ВКЛАДОК */}
-      
       {/* ВКЛАДКА 1: ДАШБОРД */}
       {activeTab === 1 && (
         <div className="flex-1 overflow-y-auto space-y-4">
-          <div className="grid grid-cols-4 gap-4">
-            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
-              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Чистая продажа (ВБ)</p>
-              <h2 className="text-2xl font-black text-gray-900 mt-1">{dashboardData.sales.toLocaleString('ru-RU')} р</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-blue-200 bg-gradient-to-br from-blue-50 to-white">
+              <p className="text-[11px] font-bold text-blue-700 uppercase tracking-wider">Отгружено, шт.</p>
+              <h2 className="text-3xl font-black text-blue-600 mt-1">{dashboardData.shippedQty}</h2>
             </div>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-green-200 bg-gradient-to-br from-green-50 to-white">
+              <p className="text-[11px] font-bold text-green-700 uppercase tracking-wider">Продано, шт.</p>
+              <h2 className="text-3xl font-black text-green-600 mt-1">{dashboardData.soldQty}</h2>
+            </div>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-orange-200 bg-gradient-to-br from-orange-50 to-white">
+              <p className="text-[11px] font-bold text-orange-700 uppercase tracking-wider">Возвраты, шт.</p>
+              <h2 className="text-3xl font-black text-orange-600 mt-1">{dashboardData.returnedQty}</h2>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="bg-white p-5 rounded-xl shadow-sm border border-green-200 bg-gradient-to-br from-green-50 to-white">
               <p className="text-[11px] font-bold text-green-700 uppercase tracking-wider">Чистая Прибыль</p>
               <h2 className="text-2xl font-black text-green-600 mt-1">{dashboardData.profit.toLocaleString('ru-RU')} р</h2>
             </div>
             <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
+              <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Чистая продажа (ВБ)</p>
+              <h2 className="text-xl font-black text-gray-900 mt-1">{dashboardData.sales.toLocaleString('ru-RU')} р</h2>
+            </div>
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
               <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Налог 20%</p>
-              <h2 className="text-2xl font-black text-gray-700 mt-1">{dashboardData.tax.toLocaleString('ru-RU')} р</h2>
+              <h2 className="text-xl font-black text-gray-700 mt-1">-{dashboardData.tax.toLocaleString('ru-RU')} р</h2>
             </div>
             <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
               <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">Логистика / Прочие</p>
@@ -518,13 +578,27 @@ export default function Reports() {
             </div>
           </div>
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-            <h3 className="text-[16px] font-bold text-gray-900 mb-4">Топ-10 товаров по прибыли</h3>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-[16px] font-bold text-gray-900">Детализация чистой прибыли по ШК (Топ-10)</h3>
+              <Button variant="outline" onClick={() => setActiveTab(2)} className="!py-1.5 text-[12px]">Смотреть все ШК</Button>
+            </div>
             <div className="space-y-3">
-              {dashboardData.topProducts.map((p: any, i: number) => (
-                <div key={p.nm_id} className="flex items-center gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
+              {dashboardData.topShks.map((p: any, i: number) => (
+                <div key={p.shk_id} className="flex items-center gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
                   <div className="w-8 font-bold text-gray-400 text-sm">#{i+1}</div>
-                  <div className="flex-1"><p className="font-semibold text-[14px] text-gray-900 truncate max-w-md">{p.title}</p></div>
-                  <div className="w-32 text-right font-bold text-[14px] text-gray-900">{p.profit.toLocaleString('ru-RU')} р</div>
+                  <div className="w-24 font-mono font-bold text-[12px] text-gray-500 bg-white px-2 py-1 rounded border border-gray-200 text-center">
+                    {p.shk_id !== 0 ? p.shk_id : 'Сводно'}
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-semibold text-[14px] text-gray-900 truncate max-w-md">{p.title}</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">Арт: {p.vendorCode}</p>
+                  </div>
+                  <div className="text-right flex flex-col items-end">
+                    <span className={`font-bold text-[15px] px-2 py-0.5 rounded ${p.netProfit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                      {p.netProfit > 0 ? '+' : ''}{p.netProfit.toLocaleString('ru-RU')} р
+                    </span>
+                    <span className="text-[11px] text-gray-500 mt-1">Себест: {p.cost.toFixed(2)} р</span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -658,7 +732,7 @@ export default function Reports() {
                                 </thead>
                                 <tbody className="divide-y divide-gray-50">
                                   {unit.original_items.map((op: any, i: number) => {
-                                    const otherSum = (op.penalty || 0) + (op.deduction || 0) + (op.acceptance || 0) + (op.storage_fee || 0);
+                                    const otherSum = (op.penalty || 0) + (op.deduction || 0) + (op.acceptance || 0) + (op.storage_fee || 0) + (op.rebill_logistic_cost || 0);
                                     return (
                                       <tr key={i} className="hover:bg-gray-50 transition-colors">
                                         <td className="p-2 font-medium text-gray-700">{new Date(op.rr_dt).toLocaleDateString('ru-RU')}</td>
@@ -725,7 +799,7 @@ export default function Reports() {
         </TableWrapper>
       )}
 
-      {/* ВКЛАДКА 4: СЫРОЙ ОТЧЕТ (EXCEL-ВИД С ФИЛЬТРАМИ) */}
+      {/* ВКЛАДКА 4: СЫРОЙ ОТЧЕТ */}
       {activeTab === 4 && (
         <TableWrapper>
           <div className="p-3 border-b border-gray-200 flex flex-wrap items-center justify-between gap-4 bg-gray-50">
@@ -746,7 +820,9 @@ export default function Reports() {
                 <button onClick={() => { setRawSortOrder('desc'); setRawDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1 text-[12px] rounded-md transition-all ${rawSortOrder === 'desc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>Убыв.</button>
                 <button onClick={() => { setRawSortOrder('asc'); setRawDisplayCount(ITEMS_PER_LOAD); }} className={`px-3 py-1 text-[12px] rounded-md transition-all ${rawSortOrder === 'asc' ? 'bg-white shadow-sm text-blue-600 font-bold' : 'text-gray-500'}`}>Возр.</button>
               </div>
-              <Button variant="success" onClick={() => exportToExcel(processedRawItems, 'WB_Raw_Report')}>Экспорт</Button>
+              <Button variant="success" onClick={() => setIsExportModalOpen(true)} className="flex items-center gap-2">
+                <FileOutput size={16} /> Скачать данные
+              </Button>
             </div>
           </div>
 
@@ -756,13 +832,11 @@ export default function Reports() {
             <div className="flex-1 overflow-auto bg-white">
               <table className="w-full text-left border-collapse whitespace-nowrap text-[11px]">
                 <thead className="sticky top-0 z-10 shadow-[0_1px_0_0_#e5e7eb] bg-gray-50">
-                  {/* Основные заголовки таблицы */}
                   <tr className="uppercase tracking-wider text-gray-500 font-bold">
                     {Object.entries(KEY_TRANSLATIONS).map(([key, label]) => (
                       <th key={key} className="px-4 py-2 border-r border-b border-gray-200 last:border-r-0" title={key}>{label}</th>
                     ))}
                   </tr>
-                  {/* Строка с полями ввода для фильтрации каждого столбца (Excel style) */}
                   <tr className="bg-white">
                     {Object.keys(KEY_TRANSLATIONS).map((key) => (
                       <th key={`filter-${key}`} className="px-2 py-1 border-r border-b border-gray-200 last:border-r-0 font-normal">
@@ -800,6 +874,41 @@ export default function Reports() {
             </div>
           )}
         </TableWrapper>
+      )}
+
+      {/* МОДАЛКА: ЭКСПОРТ СЫРОГО ОТЧЕТА */}
+      {isExportModalOpen && (
+        <div className="fixed inset-0 bg-gray-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setIsExportModalOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden relative animate-in fade-in zoom-in duration-200" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+              <h3 className="text-[16px] font-bold text-[#1e3a5f] flex items-center gap-2">
+                <FileOutput size={18} className="text-green-600" />
+                Скачать данные
+              </h3>
+              <button onClick={() => setIsExportModalOpen(false)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer" disabled={isExporting}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-6">
+              <p className="text-[12px] text-gray-500 mb-4">Выберите период, за который нужно выгрузить сырой отчет. Файл будет сохранен в формате Excel.</p>
+              
+              <div className="flex gap-4 mb-6">
+                <div className="flex-1">
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1.5 ml-1">От</label>
+                  <input type="date" value={exportDateFrom} onChange={(e) => setExportDateFrom(e.target.value)} disabled={isExporting} className="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-[13px] text-gray-900 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer" />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1.5 ml-1">До</label>
+                  <input type="date" value={exportDateTo} onChange={(e) => setExportDateTo(e.target.value)} disabled={isExporting} className="w-full bg-gray-50 border border-gray-200 rounded-lg py-2 px-3 text-[13px] text-gray-900 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer" />
+                </div>
+              </div>
+
+              <Button variant="success" onClick={handleGenerateExport} disabled={isExporting} className="w-full justify-center !py-2.5 text-[14px]">
+                {isExporting ? "Формируется..." : "Сформировать"}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Модалка для отсутствующих цен */}
