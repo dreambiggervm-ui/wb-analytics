@@ -68,7 +68,6 @@ export default function Reports() {
   
   const [isMissingPricesModalOpen, setIsMissingPricesModalOpen] = useState(false);
 
-  // Состояния сырого отчета и фильтры столбцов
   const [rawDisplayCount, setRawDisplayCount] = useState(ITEMS_PER_LOAD);
   const [rawDateStart, setRawDateStart] = useState('');
   const [rawDateEnd, setRawDateEnd] = useState('');
@@ -81,7 +80,7 @@ export default function Reports() {
   const rawReports = useLiveQuery(() => db.rawReports.toArray()) || [];
   
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || [];
 
   const loadNewReports = async () => {
     if (!token) return alert('API Токен (Статистика) не найден!');
@@ -139,7 +138,7 @@ export default function Reports() {
     
     // Подготовка истории FIFO
     const nmReceiptsMap = new Map();
-    wbLinks.forEach(link => {
+    wbLinks.forEach((link: any) => {
       const myItem = myWarehouse.find(m => m.id === link.myStockItemId);
       if (myItem && myItem.receipts && myItem.receipts.length > 0) {
         const sorted = [...myItem.receipts].sort((a, b) => a.date.localeCompare(b.date)).map(r => ({...r, used: 0}));
@@ -214,6 +213,7 @@ export default function Reports() {
           shk_id: shk, nm_id: row.nm_id || 0,
           title: row.subject_name || (shk === 0 ? 'Сводные операции' : 'Неизвестно'),
           vendorCode: row.sa_name || '',
+          barcode: row.barcode || '',
           sale_amount: 0, return_amount: 0, logistics_amount: 0, other_expenses: 0, 
           first_date: null, original_items: [], aggregatedCost: 0
         });
@@ -224,6 +224,7 @@ export default function Reports() {
 
       if (!unit.vendorCode && row.sa_name) unit.vendorCode = row.sa_name;
       if (unit.nm_id === 0 && row.nm_id) unit.nm_id = row.nm_id;
+      if (!unit.barcode && row.barcode) unit.barcode = row.barcode;
       if ((unit.title === 'Неизвестно' || !unit.title) && row.subject_name) unit.title = row.subject_name;
 
       const opDate = (row.order_dt || row.rr_dt || '').split('T')[0];
@@ -265,6 +266,7 @@ export default function Reports() {
       unit.original_items.forEach((op: any) => {
         const docType = (op.doc_type_name || '').toLowerCase();
         const operName = (op.supplier_oper_name || '').toLowerCase();
+        const bonusName = (op.bonus_type_name || '').toLowerCase();
 
         // Поехала к клиенту
         if (operName.includes('к клиенту при продаже')) {
@@ -282,13 +284,13 @@ export default function Reports() {
         }
 
         // Возвраты продавцу
-        if (operName.includes('возврат брака')) {
+        if (operName.includes('возврат брака') || bonusName.includes('возврат брака')) {
            finalStatus = 'Возврат брака (К продавцу)';
-        } else if (operName.includes('возврат кгт')) {
+        } else if (operName.includes('возврат кгт') || bonusName.includes('возврат кгт')) {
            finalStatus = 'Возврат КГТ продавцу (К продавцу)';
-        } else if (operName.includes('приехал по мп')) {
+        } else if (operName.includes('приехал по мп') || bonusName.includes('приехал по мп')) {
            finalStatus = 'Возврат по МП (К продавцу)';
-        } else if (operName.includes('возврат продавцу')) {
+        } else if (operName.includes('возврат продавцу') || bonusName.includes('возврат продавцу')) {
            finalStatus = 'Возвращен продавцу';
         }
       });
@@ -300,24 +302,36 @@ export default function Reports() {
         unit.status = finalStatus;
       }
 
-      // Присвоение стоимости с учетом FIFO
+      // Присвоение стоимости: даже если это не продажа, пытаемся получить цену со склада или ручную
       if (unit.shk_id !== 0) {
-         unit.cost = shkCostMap.get(unit.shk_id) !== undefined ? shkCostMap.get(unit.shk_id) : getPriceForDate(unit.nm_id, unit.first_date, savedPrices);
+         if (shkCostMap.get(unit.shk_id) !== undefined) {
+             unit.cost = shkCostMap.get(unit.shk_id);
+         } else {
+             const receipts = nmReceiptsMap.get(unit.nm_id);
+             if (receipts && receipts.length > 0) {
+                 unit.cost = receipts[receipts.length - 1].price; // Резервное значение для отображения
+             } else {
+                 unit.cost = getPriceForDate(unit.nm_id, unit.first_date, savedPrices);
+             }
+         }
       } else {
          unit.cost = unit.aggregatedCost || 0;
       }
       
-      unit.isLinked = wbLinks.some(l => l.nmId === unit.nm_id);
+      unit.isLinked = wbLinks.some((l: any) => l.nmId === unit.nm_id);
 
       if (unit.nm_id !== 0 && unit.cost === 0 && !uniqueMissingMap.has(unit.nm_id)) {
         uniqueMissingMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode });
       }
 
-      const isSold = unit.status === 'Продажа';
-      const costToDeduct = isSold ? unit.cost : 0;
+      unit.net_sales = unit.sale_amount - unit.return_amount;
+
+      // СЕБЕСТОИМОСТЬ ВЫЧИТАЕТСЯ ТОЛЬКО ЕСЛИ ПРОДАЖА > 0.
+      const isSold = unit.status === 'Продажа' && unit.net_sales > 0;
       unit.isSold = isSold;
 
-      unit.net_sales = unit.sale_amount - unit.return_amount;
+      const costToDeduct = isSold ? unit.cost : 0;
+      
       const taxBase = unit.net_sales - unit.logistics_amount - costToDeduct;
       unit.tax = taxBase > 0 ? taxBase * 0.2 : 0;
       unit.netProfit = unit.net_sales - unit.logistics_amount - unit.other_expenses - costToDeduct - unit.tax;
@@ -561,7 +575,7 @@ export default function Reports() {
                     <th className="px-4 py-3 w-10 border-b border-gray-200"></th>
                     <th className="px-4 py-3 border-b border-gray-200">Дата заказа</th>
                     <th className="px-4 py-3 border-b border-gray-200">ШК (shk_id)</th>
-                    <th className="px-4 py-3 border-b border-gray-200">Артикул</th>
+                    <th className="px-4 py-3 border-b border-gray-200">Артикул / Баркод</th>
                     <th className="px-4 py-3 border-b border-gray-200">Статус</th>
                     <th className="px-4 py-3 text-right text-blue-800 border-b border-gray-200">Продажа</th>
                     <th className="px-4 py-3 text-right border-b border-gray-200">Логистика</th>
@@ -582,6 +596,7 @@ export default function Reports() {
                           <p className="text-[13px] font-semibold text-[#1e3a5f] truncate max-w-[300px]" title={unit.vendorCode || unit.title}>
                             {unit.vendorCode || unit.title}
                           </p>
+                          {unit.barcode && <p className="text-[10px] text-gray-400 font-mono mt-0.5">Штрих-код: {unit.barcode}</p>}
                         </td>
                         <td className="px-4 py-3">
                           <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${
@@ -738,7 +753,7 @@ export default function Reports() {
           {rawCurrentItems.length === 0 ? (
             <EmptyState icon={FileSpreadsheet} title="Нет данных" description="Сырой отчет пуст для выбранных параметров" />
           ) : (
-            <div className="flex-1 overflow-auto">
+            <div className="flex-1 overflow-auto bg-white">
               <table className="w-full text-left border-collapse whitespace-nowrap text-[11px]">
                 <thead className="sticky top-0 z-10 shadow-[0_1px_0_0_#e5e7eb] bg-gray-50">
                   {/* Основные заголовки таблицы */}
