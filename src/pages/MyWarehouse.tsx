@@ -10,7 +10,7 @@ export default function MyWarehouse() {
   const changes = useLiveQuery(() => db.myWarehouseChanges.toArray()) || [];
   
   const wbProducts = useLiveQuery(() => db.fbsStocks.toArray()) || []; 
-  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
   
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -94,26 +94,26 @@ export default function MyWarehouse() {
       await db.myWarehouse.delete(id);
       await db.myWarehouseChanges.where('itemId').equals(id).delete();
       
-      const linksToDelete = await db.wbLinksV2.where('myStockItemId').equals(id).toArray();
+      const linksToDelete = await db.wbLinks.where('myStockItemId').equals(id).toArray();
       for (const link of linksToDelete) {
-        if (link.id) await db.wbLinksV2.delete(link.id);
+        await db.wbLinks.delete(link.nmId);
       }
     }
   };
 
   const handleLinkWb = async (nmId: number) => {
     if (!linkingStockId) return;
-    const existingLinks = await db.wbLinksV2.where('nmId').equals(nmId).toArray();
-    const alreadyLinked = existingLinks.find(l => l.myStockItemId === linkingStockId);
-    if (!alreadyLinked) await db.wbLinksV2.add({ nmId: nmId, myStockItemId: linkingStockId });
+    const existingLinks = await db.wbLinks.where('nmId').equals(nmId).toArray();
+    const alreadyLinked = existingLinks.find((l: any) => l.myStockItemId === linkingStockId);
+    if (!alreadyLinked) await db.wbLinks.add({ nmId: nmId, myStockItemId: linkingStockId });
     setLinkingStockId(null); setLinkSearchWb('');
   };
 
   const handleUnlinkWb = async (nmId: number, stockItemId: number) => {
     if (window.confirm('Отвязать карточку Wildberries от этого товара?')) {
-      const links = await db.wbLinksV2.where('nmId').equals(nmId).toArray();
-      const linkToDelete = links.find(l => l.myStockItemId === stockItemId);
-      if (linkToDelete && linkToDelete.id) await db.wbLinksV2.delete(linkToDelete.id);
+      const links = await db.wbLinks.where('nmId').equals(nmId).toArray();
+      const linkToDelete = links.find((l: any) => l.myStockItemId === stockItemId);
+      if (linkToDelete) await db.wbLinks.delete(linkToDelete.nmId);
     }
   };
 
@@ -320,7 +320,7 @@ export default function MyWarehouse() {
       }
     });
 
-    alert(`Комплектация успешно завершена!\nСоздано: ${kitCount} шт. "${kitTitle}"\nСписано: ${totalToDeduct} шт.`);
+    alert(`Комплектация успешно завершена!\nСоздано: ${kittingCount} шт. "${kitTitle}"\nСписано: ${totalToDeduct} шт.`);
     setKittingItem(null);
   };
 
@@ -436,8 +436,8 @@ export default function MyWarehouse() {
               <tbody className="divide-y divide-gray-100">
                 {filteredItems.map((item) => {
                   const linkedWbItems = wbLinks
-                    .filter(l => l.myStockItemId === item.id)
-                    .map(l => wbProducts.find(p => p.nmId === l.nmId))
+                    .filter((l: any) => l.myStockItemId === item.id)
+                    .map((l: any) => wbProducts.find((p: any) => p.nmId === l.nmId))
                     .filter(Boolean);
                     
                   const latestReceipt = item.receipts && item.receipts.length > 0 ? item.receipts[item.receipts.length - 1] : null;
@@ -470,7 +470,7 @@ export default function MyWarehouse() {
 
                       <td className="px-5 py-3 border-r border-gray-100 align-middle">
                         <div className="flex flex-col gap-2">
-                          {linkedWbItems.map(p => (
+                          {linkedWbItems.map((p: any) => (
                              <div key={p!.nmId} className="flex items-center justify-between gap-3 px-2 py-1.5 bg-blue-50/50 rounded-lg border border-blue-100">
                                <div className="flex flex-col max-w-[200px] whitespace-normal break-words">
                                  <span className="text-[11px] font-bold text-blue-900 leading-tight line-clamp-1" title={p!.title}>{p!.title}</span>

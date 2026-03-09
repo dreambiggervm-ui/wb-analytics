@@ -17,7 +17,7 @@ export default function Products() {
   const savedProducts = useLiveQuery(() => db.fbsStocks.toArray()) || [];
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || []; // ОБНОВЛЕНО
+  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || []; // ОБНОВЛЕНО
 
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedBarcode, setCopiedBarcode] = useState<string | null>(null);
@@ -30,16 +30,16 @@ export default function Products() {
 
   const handleLink = async (myStockItemId: number) => {
     if (!linkingNmId) return;
-    const existing = await db.wbLinksV2.where('nmId').equals(linkingNmId).toArray();
+    const existing = await db.wbLinks.where('nmId').equals(linkingNmId).toArray();
     if (!existing.find((l: any) => l.myStockItemId === myStockItemId)) {
-      await db.wbLinksV2.add({ nmId: linkingNmId, myStockItemId });
+      await db.wbLinks.add({ nmId: linkingNmId, myStockItemId });
     }
     setLinkingNmId(null); setLinkSearch('');
   };
 
   const handleUnlink = async (nmId: number) => {
     if (window.confirm('Отвязать этот товар от ВСЕХ позиций на "Моем складе"?')) {
-      await db.wbLinksV2.where('nmId').equals(nmId).delete();
+      await db.wbLinks.where('nmId').equals(nmId).delete();
     }
   };
 
@@ -230,7 +230,7 @@ export default function Products() {
                 {processedProducts.map((product) => {
                   const productLinks = wbLinks.filter((l: any) => l.nmId === product.nmId);
                   const linkedItems = productLinks.map((l: any) => myWarehouse.find(m => m.id === l.myStockItemId)).filter(Boolean);
-                  const totalQty = linkedItems.reduce((sum, item) => sum + (item!.quantity || 0), 0);
+                  const totalQty = linkedItems.reduce((sum: any, item: any) => sum + (item!.quantity || 0), 0);
                   const firstLinkedItem = linkedItems[0];
                   const latestReceipt = firstLinkedItem?.receipts && firstLinkedItem.receipts.length > 0 ? firstLinkedItem.receipts[firstLinkedItem.receipts.length - 1] : null;
 
@@ -268,7 +268,7 @@ export default function Products() {
                       <td className="px-4 py-3 border-r border-gray-100 align-middle bg-indigo-50/10">
                         {linkedItems.length > 0 ? (
                           <div className="flex flex-col items-center justify-center gap-1">
-                            <div className="flex items-center gap-1.5" title={linkedItems.map(i => i?.title).join('\n')}>
+                            <div className="flex items-center gap-1.5" title={linkedItems.map((i: any) => i?.title).join('\n')}>
                               <Box size={12} className="text-indigo-400" />
                               <span className={`text-[14px] font-bold ${totalQty > 0 ? 'text-green-600' : 'text-red-500'}`}>Остаток: {totalQty} шт</span>
                             </div>

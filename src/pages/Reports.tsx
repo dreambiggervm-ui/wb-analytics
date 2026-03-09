@@ -87,7 +87,7 @@ export default function Reports() {
   const rawReports = useLiveQuery(() => db.rawReports.toArray()) || [];
   
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
 
   const loadNewReports = async () => {
     if (!token) return alert('API Токен (Статистика) не найден!');
