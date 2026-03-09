@@ -28,6 +28,9 @@ export interface WbSupply { id: string; name: string; createdAt: string; closedA
 export interface WbOrder { id: number; supplyId?: string; article: string; title: string; price: number; supplierStatus?: string; createdAt: string; localDeducted?: boolean; nmId?: number; }
 export interface WbLink { nmId: number; myStockItemId: number; }
 
+// НОВОЕ: Интерфейс для wbLinks с уникальным id
+export interface WbLinkV2 { id?: number; nmId: number; myStockItemId: number; }
+
 // Интерфейс для ручных отгрузок (Заказы со склада)
 export interface ManualOrder {
   id?: number;
@@ -82,6 +85,7 @@ export class WbAnalyticsDB extends Dexie {
   wbSupplies!: Table<WbSupply>;
   wbOrders!: Table<WbOrder>;
   wbLinks!: Table<WbLink>;
+  wbLinksV2!: Table<WbLinkV2>; // ДОБАВЛЕНО
   manualOrders!: Table<ManualOrder>; 
   
   // НОВОЕ: Таблицы Emall
@@ -114,6 +118,24 @@ export class WbAnalyticsDB extends Dexie {
       emallProducts: 'id, article, title',
       emallOrders: 'id, status, createdAt',
       emallLinks: 'emallProductId, myStockItemId'
+    });
+
+    // ДОБАВЛЕНО: Версия 14: Изменение ключа wbLinks для поддержки множественных связей
+    this.version(14).stores({
+      wbLinks: 'nmId, myStockItemId', 
+      wbLinksV2: '++id, nmId, myStockItemId' 
+    }).upgrade(async trans => {
+      // Переносим данные из старой таблицы в новую, если они есть
+      const oldLinks = await trans.table('wbLinks').toArray();
+      const newLinksCount = await trans.table('wbLinksV2').count();
+      if (oldLinks.length > 0 && newLinksCount === 0) {
+        // Убираем nmId в качестве первичного ключа и переносим данные
+        const mappedLinks = oldLinks.map((l: any) => ({
+          nmId: l.nmId,
+          myStockItemId: l.myStockItemId
+        }));
+        await trans.table('wbLinksV2').bulkAdd(mappedLinks);
+      }
     });
   }
 }

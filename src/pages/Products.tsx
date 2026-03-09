@@ -17,7 +17,7 @@ export default function Products() {
   const savedProducts = useLiveQuery(() => db.fbsStocks.toArray()) || [];
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || []; // ОБНОВЛЕНО
+  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || []; // ОБНОВЛЕНО
 
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedBarcode, setCopiedBarcode] = useState<string | null>(null);
@@ -30,7 +30,7 @@ export default function Products() {
 
   const handleLink = async (myStockItemId: number) => {
     if (!linkingNmId) return;
-    const existing = await db.wbLinks.where('nmId').equals(linkingNmId).toArray();
+    const existing = await db.wbLinksV2.where('nmId').equals(linkingNmId).toArray();
     if (!existing.find((l: any) => l.myStockItemId === myStockItemId)) {
       await db.wbLinks.add({ nmId: linkingNmId, myStockItemId });
     }

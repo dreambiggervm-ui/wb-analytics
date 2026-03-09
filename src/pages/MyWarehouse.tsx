@@ -10,7 +10,7 @@ export default function MyWarehouse() {
   const changes = useLiveQuery(() => db.myWarehouseChanges.toArray()) || [];
   
   const wbProducts = useLiveQuery(() => db.fbsStocks.toArray()) || []; 
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || [];
   
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
@@ -94,26 +94,26 @@ export default function MyWarehouse() {
       await db.myWarehouse.delete(id);
       await db.myWarehouseChanges.where('itemId').equals(id).delete();
       
-      const linksToDelete = await db.wbLinks.where('myStockItemId').equals(id).toArray();
+      const linksToDelete = await db.wbLinksV2.where('myStockItemId').equals(id).toArray();
       for (const link of linksToDelete) {
-        await db.wbLinks.delete(link.nmId);
+        if (link.id) await db.wbLinksV2.delete(link.id);
       }
     }
   };
 
   const handleLinkWb = async (nmId: number) => {
     if (!linkingStockId) return;
-    const existingLinks = await db.wbLinks.where('nmId').equals(nmId).toArray();
+    const existingLinks = await db.wbLinksV2.where('nmId').equals(nmId).toArray();
     const alreadyLinked = existingLinks.find((l: any) => l.myStockItemId === linkingStockId);
-    if (!alreadyLinked) await db.wbLinks.add({ nmId: nmId, myStockItemId: linkingStockId });
+    if (!alreadyLinked) await db.wbLinksV2.add({ nmId: nmId, myStockItemId: linkingStockId });
     setLinkingStockId(null); setLinkSearchWb('');
   };
 
   const handleUnlinkWb = async (nmId: number, stockItemId: number) => {
     if (window.confirm('Отвязать карточку Wildberries от этого товара?')) {
-      const links = await db.wbLinks.where('nmId').equals(nmId).toArray();
+      const links = await db.wbLinksV2.where('nmId').equals(nmId).toArray();
       const linkToDelete = links.find((l: any) => l.myStockItemId === stockItemId);
-      if (linkToDelete) await db.wbLinks.delete(linkToDelete.nmId);
+      if (linkToDelete && linkToDelete.id) await db.wbLinksV2.delete(linkToDelete.id);
     }
   };
 
