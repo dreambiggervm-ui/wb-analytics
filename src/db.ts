@@ -1,7 +1,7 @@
 import Dexie, { Table } from 'dexie';
 
 export interface WholesalePrice { id?: number; name: string; price: number; startDate: string; endDate: string; nmId?: number; updatedAt?: number; }
-export interface WbProduct { nmID: number; vendorCode: string; title: string; photo: string; }
+export interface WbProduct { nmID: number; vendorCode: string; title: string; photo: string; sizes?: string[]; }
 export interface FbsWarehouse { id: number; name: string; }
 export interface FbsStockItem { id: string; nmId: number; vendorCode: string; title: string; techSize: string; color: string; barcodes: string[]; photo: string; stocks: Record<number, number>; totalAmount: number; }
 export interface FbsStatus { id: string; status: string; since: number; }
@@ -29,7 +29,7 @@ export interface WbOrder { id: number; supplyId?: string; article: string; title
 export interface WbLink { nmId: number; myStockItemId: number; }
 
 // НОВОЕ: Интерфейс для wbLinks с уникальным id
-export interface WbLinkV2 { id?: number; nmId: number; myStockItemId: number; }
+export interface WbLinkV2 { id?: number; nmId: number; wbItemId?: string; myStockItemId: number; }
 
 // Интерфейс для ручных отгрузок (Заказы со склада)
 export interface ManualOrder {
@@ -123,7 +123,7 @@ export class WbAnalyticsDB extends Dexie {
     // ДОБАВЛЕНО: Версия 14: Изменение ключа wbLinks для поддержки множественных связей
     this.version(14).stores({
       wbLinks: 'nmId, myStockItemId', 
-      wbLinksV2: '++id, nmId, myStockItemId' 
+      wbLinksV2: '++id, nmId, wbItemId, myStockItemId' 
     }).upgrade(async trans => {
       // Переносим данные из старой таблицы в новую, если они есть
       const oldLinks = await trans.table('wbLinks').toArray();

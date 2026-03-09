@@ -25,21 +25,29 @@ export default function Products() {
   const [editingProduct, setEditingProduct] = useState<FbsStockItem | null>(null);
   const [modalPrices, setModalPrices] = useState<PricePeriod[]>([]);
 
-  const [linkingNmId, setLinkingNmId] = useState<number | null>(null);
+  const [linkingProductId, setLinkingProductId] = useState<string | null>(null);
   const [linkSearch, setLinkSearch] = useState('');
 
   const handleLink = async (myStockItemId: number) => {
-    if (!linkingNmId) return;
-    const existing = await db.wbLinksV2.where('nmId').equals(linkingNmId).toArray();
-    if (!existing.find((l: any) => l.myStockItemId === myStockItemId)) {
-      await db.wbLinks.add({ nmId: linkingNmId, myStockItemId });
+    if (!linkingProductId) return;
+    const targetProduct = processedProducts.find(p => p.id === linkingProductId);
+    if (!targetProduct) return;
+    
+    const existing = await db.wbLinksV2.toArray();
+    // Проверяем, нет ли уже связи именно с этим размером
+    if (!existing.find((l: any) => (l.wbItemId === targetProduct.id || l.nmId === targetProduct.nmId) && l.myStockItemId === myStockItemId)) {
+      await db.wbLinksV2.add({ nmId: targetProduct.nmId, wbItemId: targetProduct.id, myStockItemId });
     }
-    setLinkingNmId(null); setLinkSearch('');
+    setLinkingProductId(null); setLinkSearch('');
   };
 
-  const handleUnlink = async (nmId: number) => {
-    if (window.confirm('Отвязать этот товар от ВСЕХ позиций на "Моем складе"?')) {
-      await db.wbLinks.where('nmId').equals(nmId).delete();
+  const handleUnlink = async (productId: string) => {
+    if (window.confirm('Отвязать этот размер от ВСЕХ позиций на "Моем складе"?')) {
+      const links = await db.wbLinksV2.toArray();
+      const toDelete = links.filter((l: any) => l.wbItemId === productId || (!l.wbItemId && l.nmId === parseInt(productId.split('_')[0])));
+      for (const link of toDelete) {
+        if (link.id) await db.wbLinksV2.delete(link.id);
+      }
     }
   };
 
@@ -228,7 +236,7 @@ export default function Products() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {processedProducts.map((product) => {
-                  const productLinks = wbLinks.filter((l: any) => l.nmId === product.nmId);
+                  const productLinks = wbLinks.filter((l: any) => l.wbItemId ? l.wbItemId === product.id : l.nmId === product.nmId);
                   const linkedItems = productLinks.map((l: any) => myWarehouse.find(m => m.id === l.myStockItemId)).filter(Boolean);
                   const totalQty = linkedItems.reduce((sum: any, item: any) => sum + (item!.quantity || 0), 0);
                   const firstLinkedItem = linkedItems[0];
@@ -273,11 +281,11 @@ export default function Products() {
                               <span className={`text-[14px] font-bold ${totalQty > 0 ? 'text-green-600' : 'text-red-500'}`}>Остаток: {totalQty} шт</span>
                             </div>
                             {linkedItems.length > 1 && <span className="text-[9px] text-gray-500 font-medium">({linkedItems.length} позиций на складе)</span>}
-                            <button onClick={() => handleUnlink(product.nmId)} className="text-[10px] font-bold text-indigo-300 hover:text-red-500 transition-colors mt-0.5" title="Отвязать товар от склада">Отвязать</button>
+                            <button onClick={() => handleUnlink(product.id)} className="text-[10px] font-bold text-indigo-300 hover:text-red-500 transition-colors mt-0.5" title="Отвязать товар от склада">Отвязать</button>
                           </div>
                         ) : (
                           <div className="flex justify-center">
-                            <button onClick={() => setLinkingNmId(product.nmId)} className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-bold text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-300 rounded transition-all opacity-60 group-hover:opacity-100">
+                            <button onClick={() => setLinkingProductId(product.id)} className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-bold text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-300 rounded transition-all opacity-60 group-hover:opacity-100">
                               <LinkIcon size={12} /> Привязать к складу
                             </button>
                           </div>
@@ -328,7 +336,7 @@ export default function Products() {
         )}
       </TableWrapper>
 
-      {linkingNmId && (
+      {linkingProductId && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col h-[70vh] animate-in fade-in zoom-in duration-200">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-indigo-50/80">
@@ -336,7 +344,7 @@ export default function Products() {
                 <h3 className="text-[16px] font-bold text-indigo-900 flex items-center gap-2"><LinkIcon size={18} className="text-indigo-600" /> Связь с Моим складом</h3>
                 <p className="text-[12px] text-indigo-600/70 mt-1">Выберите товар из вашей базы для привязки</p>
               </div>
-              <button onClick={() => {setLinkingNmId(null); setLinkSearch('');}} className="p-1.5 text-indigo-400 hover:text-indigo-700 hover:bg-white rounded-lg transition-colors shadow-sm border border-transparent hover:border-indigo-200"><X size={20} /></button>
+              <button onClick={() => {setLinkingProductId(null); setLinkSearch('');}} className="p-1.5 text-indigo-400 hover:text-indigo-700 hover:bg-white rounded-lg transition-colors shadow-sm border border-transparent hover:border-indigo-200"><X size={20} /></button>
             </div>
             <div className="p-4 border-b border-gray-100 bg-white">
                <SearchInput value={linkSearch} onChange={setLinkSearch} placeholder="Поиск по Моему складу..." />
