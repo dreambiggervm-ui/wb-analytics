@@ -7,4 +7,15 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  server: {
+    proxy: {
+      // Все запросы, начинающиеся с /emall-api, Vite будет перенаправлять на сервер Emall,
+      // обходя тем самым политику CORS в браузере.
+      '/emall-api': {
+        target: 'https://api-sandbox.emall.by',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/emall-api/, '')
+      }
+    }
+  }
 })

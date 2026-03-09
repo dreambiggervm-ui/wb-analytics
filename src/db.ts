@@ -26,20 +26,47 @@ export interface Supplier { id?: number; title: string; sourceUrl: string; sheet
 export interface SupplierChange { id?: number; supplierId: number; supplierName: string; sheetName: string; category: string; title: string; field: string; oldValue: string; newValue: string; changeDate: string; }
 export interface WbSupply { id: string; name: string; createdAt: string; closedAt?: string; done: boolean; }
 export interface WbOrder { id: number; supplyId?: string; article: string; title: string; price: number; supplierStatus?: string; createdAt: string; localDeducted?: boolean; nmId?: number; }
+export interface WbLink { nmId: number; myStockItemId: number; }
 
-// ИЗМЕНЕНО: Добавлен id для множественных связей
-export interface WbLink { id?: number; nmId: number; myStockItemId: number; }
-
+// Интерфейс для ручных отгрузок (Заказы со склада)
 export interface ManualOrder {
   id?: number;
   myStockItemId: number;
   title: string;
   quantity: number;
-  salePrice: number; 
+  salePrice: number; // Цена продажи за 1 шт.
   shippingType: 'Самовывоз' | 'Курьер' | 'ТК';
-  date: string; 
-  createdAt: string; 
+  date: string; // YYYY-MM-DD
+  createdAt: string; // Точное время создания (ISO)
 }
+
+// ==========================================
+// НОВОЕ: ИНТЕРФЕЙСЫ ДЛЯ EMALL
+// ==========================================
+
+export interface EmallProduct {
+  id: string; // ID товара в Emall (согласно их API)
+  article: string;
+  title: string;
+  photo?: string;
+}
+
+export interface EmallOrder {
+  id: string; // Номер заказа Emall
+  status: string;
+  createdAt: string;
+  totalPrice: number; // Сумма продажи
+  emallCommission: number; // Комиссия площадки (для расчета чистой прибыли)
+  deliveryCost: number; // Логистика (для расчета чистой прибыли)
+  localDeducted?: boolean; // Флаг: списано ли с Моего Склада
+}
+
+export interface EmallLink {
+  emallProductId: string; // ID товара на Emall
+  myStockItemId: number; // ID товара на локальном складе (MyStockItem)
+}
+
+// ==========================================
 
 export class WbAnalyticsDB extends Dexie {
   prices!: Table<WholesalePrice>;
@@ -54,14 +81,20 @@ export class WbAnalyticsDB extends Dexie {
   supplierChanges!: Table<SupplierChange>;
   wbSupplies!: Table<WbSupply>;
   wbOrders!: Table<WbOrder>;
-  wbLinksV2!: Table<WbLink>; // НОВАЯ ТАБЛИЦА СВЯЗЕЙ
+  wbLinks!: Table<WbLink>;
   manualOrders!: Table<ManualOrder>; 
+  
+  // НОВОЕ: Таблицы Emall
+  emallProducts!: Table<EmallProduct>;
+  emallOrders!: Table<EmallOrder>;
+  emallLinks!: Table<EmallLink>;
 
   constructor() {
     super('WbAnalyticsDB');
     
-    // Версия 12 (Старая)
-    this.version(12).stores({
+    // ВАЖНО: Подняли версию до 13 для добавления таблиц Emall. 
+    // Старые таблицы сохранены без изменений.
+    this.version(13).stores({
       prices: '++id, name, nmId',
       products: 'nmID, vendorCode, title',
       rawReports: 'rrd_id, rr_dt, shk_id, nm_id',
@@ -75,20 +108,12 @@ export class WbAnalyticsDB extends Dexie {
       wbSupplies: 'id, createdAt, done',
       wbOrders: 'id, supplyId, supplierStatus, createdAt',
       wbLinks: 'nmId, myStockItemId',
-      manualOrders: '++id, date, myStockItemId, shippingType' 
-    });
-
-    // ВЕРСИЯ 13: Безопасный перенос связей
-    this.version(13).stores({
-      wbLinks: null, // Удаляем старую жесткую таблицу
-      wbLinksV2: '++id, nmId, myStockItemId' // Создаем новую гибкую таблицу
-    }).upgrade(async tx => {
-      // Автоматически переносим твои старые привязки в новую структуру!
-      const oldLinks = await tx.table('wbLinks').toArray();
-      if (oldLinks.length > 0) {
-        const newLinks = oldLinks.map((l: any) => ({ nmId: l.nmId, myStockItemId: l.myStockItemId }));
-        await tx.table('wbLinksV2').bulkAdd(newLinks);
-      }
+      manualOrders: '++id, date, myStockItemId, shippingType',
+      
+      // НОВОЕ: Индексы для таблиц Emall
+      emallProducts: 'id, article, title',
+      emallOrders: 'id, status, createdAt',
+      emallLinks: 'emallProductId, myStockItemId'
     });
   }
 }

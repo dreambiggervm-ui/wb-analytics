@@ -1,26 +1,38 @@
 import { useState, useRef } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, Warehouse, Box, Truck, History, Download, UploadCloud, ShoppingCart, Archive, Briefcase, Save } from 'lucide-react';
+import { 
+  Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, 
+  Warehouse, Box, Truck, History, Download, UploadCloud, 
+  ShoppingCart, Archive, Briefcase, Save, ShoppingBag // Добавил ShoppingBag для Emall
+} from 'lucide-react';
 import { db } from '../db';
-import { SyncService } from '../utils/syncService'; // Подключаем наш новый сервис
+import { SyncService } from '../utils/syncService'; 
 
 export default function Sidebar() {
   const [isWbMenuOpen, setIsWbMenuOpen] = useState(true);
-  const [isStockMenuOpen, setIsStockMenuOpen] = useState(true);
+  const [isEmallMenuOpen, setIsEmallMenuOpen] = useState(true); // НОВОЕ: стейт для меню Emall
   const [isSalesMenuOpen, setIsSalesMenuOpen] = useState(true);
+  const [isStockMenuOpen, setIsStockMenuOpen] = useState(true);
   
   const location = useLocation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isWbActive = ['/', '/catalog', '/reports', '/stocks', '/supplies-fbs'].includes(location.pathname);
-  const isStockActive = ['/my-warehouse', '/suppliers', '/supplier-changes'].includes(location.pathname);
+  const isEmallActive = ['/emall-catalog'].includes(location.pathname); // НОВОЕ: проверка пути Emall
   const isSalesActive = ['/pos', '/orders-history'].includes(location.pathname);
+  const isStockActive = ['/my-warehouse', '/suppliers', '/supplier-changes'].includes(location.pathname);
 
   const wbMenuItems = [
     { name: 'Каталог', icon: <Package size={18} />, path: '/catalog' },
     { name: 'Отчеты', icon: <BarChart3 size={18} />, path: '/reports' },
     { name: 'Остатки (FBS)', icon: <Layers size={18} />, path: '/stocks' },
     { name: 'Поставки (Сборка)', icon: <Truck size={18} />, path: '/supplies-fbs' },
+  ];
+
+  // НОВОЕ: Пункты меню для Emall
+  const emallMenuItems = [
+    { name: 'Каталог и связи', icon: <Package size={18} />, path: '/emall-catalog' },
+    // Позже сюда добавим Отчеты и Заказы Emall
   ];
 
   const salesMenuItems = [
@@ -45,7 +57,7 @@ export default function Sidebar() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `wb-backup-${new Date().toLocaleDateString('ru-RU')}.json`;
+      a.download = `wb-analytics-backup-${new Date().toLocaleDateString('ru-RU')}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -95,6 +107,7 @@ export default function Sidebar() {
 
       <nav className="flex-1 px-4 mt-2 overflow-y-auto pb-4 space-y-4 scrollbar-hide">
         
+        {/* === БЛОК WILDBERRIES === */}
         <div>
           <button onClick={() => setIsWbMenuOpen(!isWbMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isWbActive && !isWbMenuOpen ? 'bg-blue-50 text-blue-700' : 'text-gray-800 hover:bg-gray-50'}`}>
             <div className="flex items-center gap-3">
@@ -114,6 +127,27 @@ export default function Sidebar() {
           </div>
         </div>
 
+        {/* === НОВЫЙ БЛОК EMALL === */}
+        <div>
+          <button onClick={() => setIsEmallMenuOpen(!isEmallMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isEmallActive && !isEmallMenuOpen ? 'bg-purple-50 text-purple-700' : 'text-gray-800 hover:bg-gray-50'}`}>
+            <div className="flex items-center gap-3">
+              <ShoppingBag size={20} className={isEmallActive && !isEmallMenuOpen ? "text-purple-600" : "text-gray-500"} />
+              Emall.by
+            </div>
+            {isEmallMenuOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+          </button>
+          <div className={`overflow-hidden transition-all duration-300 ${isEmallMenuOpen ? 'max-h-64 mt-1 opacity-100' : 'max-h-0 opacity-0'}`}>
+            <div className="ml-4 pl-3 border-l-2 border-gray-100 space-y-1 py-1">
+              {emallMenuItems.map((item) => (
+                <NavLink key={item.name} to={item.path} className={({ isActive }) => `flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-[13px] transition-colors ${isActive ? 'bg-purple-50 text-purple-700' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>
+                  {item.icon} {item.name}
+                </NavLink>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* === БЛОК ПРЯМЫЕ ПРОДАЖИ === */}
         <div>
           <button onClick={() => setIsSalesMenuOpen(!isSalesMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isSalesActive && !isSalesMenuOpen ? 'bg-blue-50 text-blue-700' : 'text-gray-800 hover:bg-gray-50'}`}>
             <div className="flex items-center gap-3">
@@ -133,6 +167,7 @@ export default function Sidebar() {
           </div>
         </div>
 
+        {/* === БЛОК УЧЕТ СКЛАДА === */}
         <div>
           <button onClick={() => setIsStockMenuOpen(!isStockMenuOpen)} className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl font-bold transition-colors cursor-pointer ${isStockActive && !isStockMenuOpen ? 'bg-blue-50 text-blue-700' : 'text-gray-800 hover:bg-gray-50'}`}>
             <div className="flex items-center gap-3">
@@ -157,7 +192,6 @@ export default function Sidebar() {
         <h4 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-3 px-2">Данные (Резерв)</h4>
         <div className="space-y-2">
           
-          {/* НОВАЯ КНОПКА СОХРАНЕНИЯ В ПАПКУ ПРОЕКТА */}
           <button 
             onClick={() => SyncService.syncAllToServer()}
             className="w-full flex items-center gap-3 px-3 py-2 bg-white border border-green-200 rounded-lg text-[13px] font-bold text-green-700 hover:bg-green-50 hover:text-green-800 transition-colors shadow-sm"

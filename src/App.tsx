@@ -5,14 +5,12 @@ import Reports from './pages/Reports';
 import PriceImport from './pages/PriceImport'; 
 import Stocks from './pages/Stocks';
 import WbSupplies from './pages/WbSupplies';
-
-// Новые страницы
 import MyWarehouse from './pages/MyWarehouse';
 import Suppliers from './pages/Suppliers'; 
 import SupplierChanges from './pages/SupplierChanges';
-
 import PosTerminal from './pages/PosTerminal';
 import OrdersHistory from './pages/OrdersHistory';
+import EmallCatalog from './pages/EmallCatalog';
 
 export default function App() {
   return (
@@ -34,6 +32,7 @@ export default function App() {
             <Route path="/supplies-fbs" element={<WbSupplies />} />
             <Route path="/pos" element={<PosTerminal />} />
             <Route path="/orders-history" element={<OrdersHistory />} />
+            <Route path="/emall-catalog" element={<EmallCatalog />} />
           </Routes>
         </main>
       </div>
