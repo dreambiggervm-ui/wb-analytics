@@ -24,9 +24,9 @@ export default function Stocks() {
   const stocksData = useLiveQuery(() => db.fbsStocks.toArray(), []) || [];
   const statusHistoryArray = useLiveQuery(() => db.fbsStatusHistory.toArray(), []) || [];
   
-  // ПОДТЯГИВАЕМ ДАННЫЕ ДЛЯ СВЯЗЕЙ (МОЙ СКЛАД)
+  // ПОДТЯГИВАЕМ ДАННЫЕ ДЛЯ СВЯЗЕЙ (МОЙ СКЛАД И НОВАЯ ТАБЛИЦА wbLinksV2)
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray(), []) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray(), []) || [];
+  const wbLinks = useLiveQuery(() => (db as any).wbLinksV2?.toArray(), []) || [];
 
   const [lastUpdated, setLastUpdated] = useState<string | null>(() => localStorage.getItem('wb_fbs_last_updated') || null);
   
@@ -40,7 +40,7 @@ export default function Stocks() {
   });
 
   // СОСТОЯНИЯ ДЛЯ МОДАЛКИ ПРИВЯЗКИ
-  const [linkingNmId, setLinkingNmId] = useState<number | null>(null);
+  const [linkingProduct, setLinkingProduct] = useState<{id: string, nmId: number} | null>(null);
   const [linkSearch, setLinkSearch] = useState('');
 
   useEffect(() => {
@@ -292,10 +292,12 @@ export default function Stocks() {
       const visibleTotal = visibleWarehouses.reduce((sum, wh) => sum + (item.stocks[wh.id] || 0), 0);
       row["Общее количество (Выбранные склады WB)"] = visibleTotal;
       
-      // Добавляем Мой склад в экспорт
-      const link = wbLinks.find(l => l.nmId === item.nmId);
-      const linkedMyItem = link ? myWarehouse.find(m => m.id === link.myStockItemId) : null;
-      row["Мой Склад"] = linkedMyItem ? linkedMyItem.quantity : 'Не привязан';
+      // Добавляем Мой склад в экспорт с учетом wbLinksV2
+      const productLinks = wbLinks.filter((l: any) => l.wbItemId ? l.wbItemId === item.id : l.nmId === item.nmId);
+      const linkedItems = productLinks.map((l: any) => myWarehouse.find(m => m.id === l.myStockItemId)).filter(Boolean);
+      const totalQty = linkedItems.reduce((sum: any, m: any) => sum + (m!.quantity || 0), 0);
+
+      row["Мой Склад"] = linkedItems.length > 0 ? totalQty : 'Не привязан';
       
       return row;
     });
@@ -308,17 +310,26 @@ export default function Stocks() {
     setTimeout(() => setCopiedBarcode(null), 2000);
   };
 
-  // ЛОГИКА СВЯЗЫВАНИЯ
+  // ЛОГИКА СВЯЗЫВАНИЯ С ИСПОЛЬЗОВАНИЕМ НОВЫХ СВЯЗЕЙ (wbLinksV2)
   const handleLink = async (myStockItemId: number) => {
-    if (!linkingNmId) return;
-    await db.wbLinks.put({ nmId: linkingNmId, myStockItemId });
-    setLinkingNmId(null);
+    if (!linkingProduct) return;
+    
+    const existing = await (db as any).wbLinksV2.toArray();
+    // Проверяем, нет ли уже связи именно с этим размером
+    if (!existing.find((l: any) => (l.wbItemId === linkingProduct.id || l.nmId === linkingProduct.nmId) && l.myStockItemId === myStockItemId)) {
+      await (db as any).wbLinksV2.add({ nmId: linkingProduct.nmId, wbItemId: linkingProduct.id, myStockItemId });
+    }
+    setLinkingProduct(null);
     setLinkSearch('');
   };
 
-  const handleUnlink = async (nmId: number) => {
-    if (window.confirm('Отвязать этот товар от "Моего склада"?')) {
-      await db.wbLinks.where('nmId').equals(nmId).delete();
+  const handleUnlink = async (productId: string, nmId: number) => {
+    if (window.confirm('Отвязать этот товар от ВСЕХ позиций на "Моем складе"?')) {
+      const links = await (db as any).wbLinksV2.toArray();
+      const toDelete = links.filter((l: any) => l.wbItemId === productId || (!l.wbItemId && l.nmId === nmId));
+      for (const link of toDelete) {
+        if (link.id) await (db as any).wbLinksV2.delete(link.id);
+      }
     }
   };
 
@@ -409,7 +420,7 @@ export default function Stocks() {
                   ))}
                   
                   {/* КОЛОНКА "МОЙ СКЛАД" ПЕРЕД "ИТОГО" */}
-                  <th className="px-4 py-2.5 text-center border-r border-gray-100 bg-indigo-50/50 text-indigo-700">
+                  <th className="px-4 py-2.5 text-center border-r border-gray-100 bg-indigo-50/50 text-indigo-700 w-36">
                     Мой Склад
                   </th>
 
@@ -423,9 +434,10 @@ export default function Stocks() {
                   const visibleTotal = visibleWarehouses.reduce((sum, wh) => sum + (item.stocks[wh.id] || 0), 0);
                   const showSize = item.techSize && item.techSize !== '0';
                   
-                  // Ищем связь с "Моим складом"
-                  const link = wbLinks.find(l => l.nmId === item.nmId);
-                  const linkedMyItem = link ? myWarehouse.find(m => m.id === link.myStockItemId) : null;
+                  // Ищем связь с "Моим складом" через wbLinksV2
+                  const productLinks = wbLinks.filter((l: any) => l.wbItemId ? l.wbItemId === item.id : l.nmId === item.nmId);
+                  const linkedItems = productLinks.map((l: any) => myWarehouse.find(m => m.id === l.myStockItemId)).filter(Boolean);
+                  const totalQty = linkedItems.reduce((sum: any, m: any) => sum + (m!.quantity || 0), 0);
                   
                   return (
                     <tr key={item.id} className="hover:bg-gray-50/80 transition-colors bg-white group">
@@ -489,23 +501,24 @@ export default function Stocks() {
 
                       {/* КОЛОНКА "МОЙ СКЛАД" */}
                       <td className="px-4 py-2 border-r border-gray-100 align-middle bg-indigo-50/10">
-                        {linkedMyItem ? (
+                        {linkedItems.length > 0 ? (
                           <div className="flex flex-col items-center justify-center gap-1">
-                            <div className="flex items-center gap-1.5" title={linkedMyItem.title}>
+                            <div className="flex items-center gap-1.5" title={linkedItems.map((i: any) => i?.title).join('\n')}>
                               <Box size={12} className="text-indigo-400" />
-                              <span className={`text-[14px] font-bold ${linkedMyItem.quantity > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                                {linkedMyItem.quantity}
+                              <span className={`text-[14px] font-bold ${totalQty > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                {totalQty}
                               </span>
                             </div>
-                            <button onClick={() => handleUnlink(item.nmId)} className="text-[10px] font-bold text-indigo-300 hover:text-red-500 transition-colors" title="Отвязать товар от склада">
+                            {linkedItems.length > 1 && <span className="text-[9px] text-gray-500 font-medium">({linkedItems.length} позиций)</span>}
+                            <button onClick={() => handleUnlink(item.id, item.nmId)} className="text-[10px] font-bold text-indigo-300 hover:text-red-500 transition-colors mt-0.5" title="Отвязать товар от склада">
                               Отвязать
                             </button>
                           </div>
                         ) : (
                           <div className="flex justify-center">
                             <button 
-                              onClick={() => setLinkingNmId(item.nmId)} 
-                              className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-bold text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-300 rounded transition-all opacity-60 group-hover:opacity-100"
+                              onClick={() => setLinkingProduct({ id: item.id, nmId: item.nmId })} 
+                              className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-bold text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-300 rounded transition-all opacity-60 group-hover:opacity-100"
                             >
                               <LinkIcon size={12} /> Привязать
                             </button>
@@ -587,7 +600,7 @@ export default function Stocks() {
       )}
 
       {/* МОДАЛЬНОЕ ОКНО ПОИСКА ДЛЯ ПРИВЯЗКИ */}
-      {linkingNmId && (
+      {linkingProduct && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col h-[70vh] animate-in fade-in zoom-in duration-200">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-indigo-50/80">
@@ -597,7 +610,7 @@ export default function Stocks() {
                 </h3>
                 <p className="text-[12px] text-indigo-600/70 mt-1">Выберите товар из вашей базы для привязки</p>
               </div>
-              <button onClick={() => {setLinkingNmId(null); setLinkSearch('');}} className="p-1.5 text-indigo-400 hover:text-indigo-700 hover:bg-white rounded-lg transition-colors shadow-sm border border-transparent hover:border-indigo-200"><X size={20} /></button>
+              <button onClick={() => {setLinkingProduct(null); setLinkSearch('');}} className="p-1.5 text-indigo-400 hover:text-indigo-700 hover:bg-white rounded-lg transition-colors shadow-sm border border-transparent hover:border-indigo-200"><X size={20} /></button>
             </div>
             
             <div className="p-4 border-b border-gray-100 bg-white">

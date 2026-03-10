@@ -68,7 +68,6 @@ export default function Reports() {
   
   const [isMissingPricesModalOpen, setIsMissingPricesModalOpen] = useState(false);
 
-  // Стейты для просмотра сырого отчета в таблице
   const [rawDisplayCount, setRawDisplayCount] = useState(ITEMS_PER_LOAD);
   const [rawDateStart, setRawDateStart] = useState('');
   const [rawDateEnd, setRawDateEnd] = useState('');
@@ -76,18 +75,19 @@ export default function Reports() {
   const [rawSortOrder, setRawSortOrder] = useState<'desc' | 'asc'>('desc');
   const [rawColumnFilters, setRawColumnFilters] = useState<Record<string, string>>({});
 
-  // НОВЫЕ СТЕЙТЫ: Для модального окна экспорта сырого отчета
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportDateFrom, setExportDateFrom] = useState('');
   const [exportDateTo, setExportDateTo] = useState('');
   const [isExporting, setIsExporting] = useState(false);
 
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
-  const savedProducts = useLiveQuery(() => db.products.toArray()) || [];
+  // ИСПОЛЬЗУЕМ НОВЫЙ КАТАЛОГ ИЗ fbsStocks
+  const savedProducts = useLiveQuery(() => db.fbsStocks.toArray()) || [];
   const rawReports = useLiveQuery(() => db.rawReports.toArray()) || [];
   
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinks.toArray()) || [];
+  // ИСПОЛЬЗУЕМ НОВУЮ ТАБЛИЦУ СВЯЗЕЙ
+  const wbLinksV2 = useLiveQuery(() => (db as any).wbLinksV2?.toArray()) || [];
 
   const loadNewReports = async () => {
     if (!token) return alert('API Токен (Статистика) не найден!');
@@ -138,16 +138,11 @@ export default function Reports() {
     setRawDisplayCount(ITEMS_PER_LOAD);
   };
 
-  // ФУНКЦИЯ ЭКСПОРТА ИЗ МОДАЛКИ
   const handleGenerateExport = async () => {
     setIsExporting(true);
-    
-    // Даем React время обновить UI (показать лоадер) перед тяжелой операцией
     setTimeout(() => {
       try {
         let dataToExport = [...rawReports];
-        
-        // Фильтруем по периоду из модалки (если даты выбраны)
         if (exportDateFrom || exportDateTo) {
           dataToExport = dataToExport.filter(item => {
             const date = (item.rr_dt || item.create_dt || '').split('T')[0];
@@ -164,7 +159,6 @@ export default function Reports() {
           return;
         }
 
-        // Формируем красивый Excel-объект
         const excelData = dataToExport.map(row => {
           const formattedRow: any = {};
           Object.keys(KEY_TRANSLATIONS).forEach(key => {
@@ -173,11 +167,9 @@ export default function Reports() {
           return formattedRow;
         });
 
-        // Скачиваем
         const fileName = `WB_Raw_Report_${exportDateFrom || 'all'}_${exportDateTo || 'all'}`;
         exportToExcel(excelData, fileName);
         
-        // Закрываем модалку и сбрасываем состояние
         setIsExportModalOpen(false);
         setExportDateFrom('');
         setExportDateTo('');
@@ -187,7 +179,7 @@ export default function Reports() {
       } finally {
         setIsExporting(false);
       }
-    }, 100); // 100ms задержка для рендеринга
+    }, 100); 
   };
 
   // ==========================================
@@ -196,11 +188,14 @@ export default function Reports() {
   const { detailedData, productAnalytics, dashboardData, filteredRawReports, missingPriceItems } = useMemo(() => {
     
     const nmReceiptsMap = new Map();
-    wbLinks.forEach((link: any) => {
+    wbLinksV2.forEach((link: any) => {
       const myItem = myWarehouse.find(m => m.id === link.myStockItemId);
       if (myItem && myItem.receipts && myItem.receipts.length > 0) {
-        const sorted = [...myItem.receipts].sort((a, b) => a.date.localeCompare(b.date)).map(r => ({...r, used: 0}));
-        nmReceiptsMap.set(link.nmId, sorted);
+        const currentReceipts = myItem.receipts.map(r => ({...r, used: 0}));
+        const existing = nmReceiptsMap.get(link.nmId) || [];
+        // Объединяем партии, если к одному nmId привязано несколько складов
+        const combined = [...existing, ...currentReceipts].sort((a, b) => a.date.localeCompare(b.date));
+        nmReceiptsMap.set(link.nmId, combined);
       }
     });
 
@@ -252,7 +247,6 @@ export default function Reports() {
     const shkMap = new Map<number, any>();
     const nmMap = new Map<number, any>();
     
-    // Новые количественные счетчики
     let totalSales = 0, totalLog = 0, totalOther = 0, totalCost = 0, totalTax = 0;
     let shippedQty = 0, soldQty = 0, returnedQty = 0;
 
@@ -266,7 +260,6 @@ export default function Reports() {
     });
 
     filteredRaw.forEach(row => {
-      // Сбор количественных метрик
       shippedQty += (row.delivery_amount || 0);
       returnedQty += (row.return_amount || 0);
       
@@ -319,7 +312,8 @@ export default function Reports() {
     const uniqueMissingMap = new Map();
 
     const detailedList = Array.from(shkMap.values()).map(unit => {
-      const dbProduct = savedProducts.find(p => p.nmID === unit.nm_id);
+      // Ищем продукт в fbsStocks по nmId
+      const dbProduct = savedProducts.find(p => p.nmId === unit.nm_id);
       if (dbProduct) {
         unit.title = dbProduct.title;
         if (!unit.vendorCode) unit.vendorCode = dbProduct.vendorCode;
@@ -362,7 +356,7 @@ export default function Reports() {
          unit.cost = unit.aggregatedCost || 0;
       }
       
-      unit.isLinked = wbLinks.some((l: any) => l.nmId === unit.nm_id);
+      unit.isLinked = wbLinksV2.some((l: any) => l.nmId === unit.nm_id);
 
       if (unit.nm_id !== 0 && unit.cost === 0 && !uniqueMissingMap.has(unit.nm_id)) {
         uniqueMissingMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode });
@@ -419,9 +413,8 @@ export default function Reports() {
         topShks: detailedList.slice(0, 10)
       }
     };
-  }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd, myWarehouse, wbLinks]);
+  }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd, myWarehouse, wbLinksV2]);
 
-  // Фильтры Вкладки 2
   const processedDetailedItems = useMemo(() => {
     let result = [...detailedData];
     if (detFilterStatus !== 'All') result = result.filter(u => u.status === detFilterStatus);
@@ -446,11 +439,9 @@ export default function Reports() {
   const detCurrentItems = processedDetailedItems.slice(0, detDisplayCount);
   const detHasMore = detDisplayCount < processedDetailedItems.length;
 
-  // Фильтры Вкладки 4
   const processedRawItems = useMemo(() => {
     let result = [...filteredRawReports];
     
-    // Внутри таблицы оставляем локальные фильтры
     if (rawDateStart || rawDateEnd) {
       result = result.filter(item => {
         const date = (item.rr_dt || item.create_dt || '').split('T')[0];
