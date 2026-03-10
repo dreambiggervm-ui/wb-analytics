@@ -165,8 +165,16 @@ export default function MyWarehouse() {
     }
   };
 
+  // ОБНОВЛЕННЫЙ ШАБЛОН (ДОБАВЛЕНА КОЛОНКА "ДАТА ПОСТУПЛЕНИЯ")
   const handleDownloadTemplate = () => {
-    const data = [{ 'Категория': 'Одежда', 'Наименование': 'Пример: Футболка белая', 'Опт': 500, 'Остаток': 15, 'Примечание': 'На витрине' }];
+    const data = [{ 
+      'Категория': 'Одежда', 
+      'Наименование': 'Пример: Футболка белая', 
+      'Опт': 500, 
+      'Остаток': 15, 
+      'Дата поступления': new Date().toLocaleDateString('ru-RU'),
+      'Примечание': 'На витрине' 
+    }];
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Шаблон');
@@ -212,9 +220,36 @@ export default function MyWarehouse() {
       const colCategory = headers.findIndex(h => ['категория', 'раздел', 'группа'].includes(h));
       const colPrice = headers.findIndex(h => ['опт', 'цена', 'закупка'].includes(h));
       const colStock = headers.findIndex(h => ['остаток', 'склад', 'кол-во', 'количество'].includes(h));
+      
+      // ИЩЕМ КОЛОНКУ С ДАТОЙ
+      const colDate = headers.findIndex(h => ['дата', 'поступление', 'дата поступления'].includes(h));
       const colNote = headers.findIndex(h => ['примечание', 'инфо', 'описание'].includes(h));
 
       if (colTitle === -1) throw new Error('Не найдена колонка "Наименование"');
+
+      // ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПАРСИНГА ДАТЫ ИЗ EXCEL
+      const parseExcelDate = (val: any): string | null => {
+        if (!val) return null;
+        // 1. Если Excel передает дату как число (серийный номер)
+        if (typeof val === 'number') {
+          const date = new Date(Math.round((val - 25569) * 86400 * 1000));
+          return isNaN(date.getTime()) ? null : date.toISOString().split('T')[0];
+        }
+        // 2. Если Excel передает дату как строку "DD.MM.YYYY"
+        const strVal = String(val).trim();
+        const ruDateMatch = strVal.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+        if (ruDateMatch) {
+          let [_, d, m, y] = ruDateMatch;
+          if (y.length === 2) y = `20${y}`;
+          const date = new Date(`${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`);
+          if (!isNaN(date.getTime())) return date.toISOString().split('T')[0];
+        }
+        // 3. Стандартный парсинг JS
+        const d = new Date(strVal);
+        if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+        
+        return null;
+      };
 
       const now = new Date().toISOString();
       const todayDate = now.split('T')[0];
@@ -232,6 +267,13 @@ export default function MyWarehouse() {
         const quantity = colStock !== -1 ? parseInt(String(row[colStock]).replace(/[^\d-]/g, ''), 10) || 0 : 0;
         const note = colNote !== -1 && row[colNote] ? String(row[colNote]).trim() : '';
 
+        // ОПРЕДЕЛЯЕМ ДАТУ ПОСТУПЛЕНИЯ
+        let receiptDate = todayDate;
+        if (colDate !== -1 && row[colDate]) {
+          const parsedDate = parseExcelDate(row[colDate]);
+          if (parsedDate) receiptDate = parsedDate; // Если получилось распарсить, используем эту дату
+        }
+
         const existingItem = stockItems.find(item => item.title.toLowerCase() === title.toLowerCase());
 
         if (existingItem) {
@@ -239,7 +281,7 @@ export default function MyWarehouse() {
 
           const addedQty = quantity - existingItem.quantity;
           const newReceipts = existingItem.receipts ? [...existingItem.receipts] : [];
-          if (addedQty > 0) newReceipts.push({ date: todayDate, quantity: addedQty, price: price });
+          if (addedQty > 0) newReceipts.push({ date: receiptDate, quantity: addedQty, price: price });
 
           const updatedItem = { ...existingItem, category, price, quantity, note: note || existingItem.note, receipts: newReceipts };
 
@@ -249,7 +291,7 @@ export default function MyWarehouse() {
 
           if (changed || existingItem.category !== category) itemsToUpdate.push(updatedItem);
         } else {
-          newItemsToSave.push({ title, category, price, quantity, note, receipts: [{ date: todayDate, quantity, price }] });
+          newItemsToSave.push({ title, category, price, quantity, note, receipts: [{ date: receiptDate, quantity, price }] });
         }
       }
 
@@ -533,7 +575,11 @@ export default function MyWarehouse() {
                       </td>
                       <td className="px-5 py-3 border-r border-gray-100 text-right align-middle">
                         <div className="flex flex-col items-end">
-                          <span className="text-[14px] font-bold text-gray-800">{latestReceipt ? `${latestReceipt.price} ₽` : (item.price ? `${item.price} ₽` : '0 ₽')}</span>
+                          <span className="text-[14px] font-bold text-gray-800">
+                            {latestReceipt 
+                              ? `${Number(latestReceipt.price).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽` 
+                              : (item.price ? `${Number(item.price).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽` : '0 ₽')}
+                          </span>
                           {latestReceipt && <span className="text-[10px] text-gray-400 mt-0.5">от {new Date(latestReceipt.date).toLocaleDateString('ru-RU')}</span>}
                         </div>
                       </td>
@@ -662,7 +708,7 @@ export default function MyWarehouse() {
                 <p className="text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1">Оригинальный товар</p>
                 <p className="text-[14px] font-bold text-gray-900 leading-snug">{kittingItem.title}</p>
                 <div className="flex gap-4 mt-2">
-                  <span className="text-[12px] font-medium text-gray-600">Опт: <b>{kittingItem.price} ₽</b></span>
+                  <span className="text-[12px] font-medium text-gray-600">Опт: <b>{Number(kittingItem.price).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽</b></span>
                   <span className="text-[12px] font-medium text-gray-600">Доступно: <b className="text-green-600">{kittingItem.quantity} шт</b></span>
                 </div>
               </div>
@@ -694,7 +740,7 @@ export default function MyWarehouse() {
                     <span className="font-bold text-indigo-900 line-clamp-2">{kittingItem.title} ({kittingItemsPerKit} шт.)</span>
                     <div className="flex gap-3 mt-1.5">
                       <span className="text-[11px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">+{kittingCount} шт.</span>
-                      <span className="text-[11px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">Себестоимость: ~{kittingItem.price * kittingItemsPerKit} ₽</span>
+                      <span className="text-[11px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">Себестоимость: ~{Number(kittingItem.price * kittingItemsPerKit).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽</span>
                     </div>
                   </div>
                 </div>
