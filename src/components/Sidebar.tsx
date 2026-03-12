@@ -3,14 +3,16 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { 
   Package, BarChart3, Layers, ChevronDown, ChevronRight, Store, 
   Warehouse, Box, Truck, History, Download, UploadCloud, 
-  ShoppingCart, Archive, Briefcase, Save, ShoppingBag // Добавил ShoppingBag для Emall
+  ShoppingCart, Archive, Briefcase, Save, ShoppingBag 
 } from 'lucide-react';
 import { db } from '../db';
 import { SyncService } from '../utils/syncService'; 
+// Импортируем наш новый логотип (убедись, что путь к файлу верный)
+import { MBoxLogo } from './Logo'; 
 
 export default function Sidebar() {
   const [isWbMenuOpen, setIsWbMenuOpen] = useState(true);
-  const [isEmallMenuOpen, setIsEmallMenuOpen] = useState(true); // НОВОЕ: стейт для меню Emall
+  const [isEmallMenuOpen, setIsEmallMenuOpen] = useState(true);
   const [isSalesMenuOpen, setIsSalesMenuOpen] = useState(true);
   const [isStockMenuOpen, setIsStockMenuOpen] = useState(true);
   
@@ -18,8 +20,8 @@ export default function Sidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isWbActive = ['/', '/catalog', '/reports', '/stocks', '/supplies-fbs'].includes(location.pathname);
-  const isEmallActive = ['/emall-catalog'].includes(location.pathname); // НОВОЕ: проверка пути Emall
-  const isSalesActive = ['/pos', '/orders-history'].includes(location.pathname);
+  const isEmallActive = ['/emall-catalog'].includes(location.pathname);
+  const isSalesActive = ['/pos', '/orders-history', '/direct-sales-upload'].includes(location.pathname);
   const isStockActive = ['/my-warehouse', '/suppliers', '/supplier-changes'].includes(location.pathname);
 
   const wbMenuItems = [
@@ -29,15 +31,14 @@ export default function Sidebar() {
     { name: 'Поставки (Сборка)', icon: <Truck size={18} />, path: '/supplies-fbs' },
   ];
 
-  // НОВОЕ: Пункты меню для Emall
   const emallMenuItems = [
     { name: 'Каталог и связи', icon: <Package size={18} />, path: '/emall-catalog' },
-    // Позже сюда добавим Отчеты и Заказы Emall
   ];
 
   const salesMenuItems = [
     { name: 'Касса (Отгрузка)', icon: <ShoppingCart size={18} />, path: '/pos' },
     { name: 'Архив продаж', icon: <Archive size={18} />, path: '/orders-history' },
+    { name: 'Загрузка заказов', icon: <Download size={18} />, path: '/direct-sales-upload' }, 
   ];
 
   const stockMenuItems = [
@@ -57,7 +58,7 @@ export default function Sidebar() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `wb-analytics-backup-${new Date().toLocaleDateString('ru-RU')}.json`;
+      a.download = `mbox-erp-backup-${new Date().toLocaleDateString('ru-RU')}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -98,11 +99,9 @@ export default function Sidebar() {
 
   return (
     <div className="w-64 bg-white border-r border-gray-200 h-screen flex flex-col">
-      <div className="p-6 flex items-center gap-3">
-        <div className="w-8 h-8 bg-blue-600 rounded-lg shadow-sm flex items-center justify-center">
-          <span className="text-white font-bold">WB</span>
-        </div>
-        <span className="text-xl font-semibold text-gray-900 tracking-tight">Analytics</span>
+      {/* === ОБНОВЛЕННЫЙ БЛОК ЛОГОТИПА === */}
+      <div className="p-6">
+        <MBoxLogo />
       </div>
 
       <nav className="flex-1 px-4 mt-2 overflow-y-auto pb-4 space-y-4 scrollbar-hide">

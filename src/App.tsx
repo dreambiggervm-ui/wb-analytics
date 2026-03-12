@@ -11,6 +11,7 @@ import SupplierChanges from './pages/SupplierChanges';
 import PosTerminal from './pages/PosTerminal';
 import OrdersHistory from './pages/OrdersHistory';
 import EmallCatalog from './pages/EmallCatalog';
+import DirectSalesUpload from './pages/DirectSalesUpload';
 
 export default function App() {
   return (
@@ -32,7 +33,9 @@ export default function App() {
             <Route path="/supplies-fbs" element={<WbSupplies />} />
             <Route path="/pos" element={<PosTerminal />} />
             <Route path="/orders-history" element={<OrdersHistory />} />
+            <Route path="/direct-sales-upload" element={<DirectSalesUpload />} />
             <Route path="/emall-catalog" element={<EmallCatalog />} />
+            
           </Routes>
         </main>
       </div>

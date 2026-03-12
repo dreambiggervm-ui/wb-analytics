@@ -1,0 +1,17 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="56" y="86" width="400" height="400" rx="90" fill="#2563EB" fill-opacity="0.3" filter="blur(40px)"/>
+  
+  <rect x="56" y="56" width="400" height="400" rx="90" fill="url(#mbox_gradient)"/>
+  
+  <path d="M256 136L146 191V321L256 376L366 321V191L256 136Z" stroke="white" stroke-opacity="0.6" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M146 191L256 246L366 191" stroke="white" stroke-opacity="0.6" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M256 376V246" stroke="white" stroke-opacity="0.6" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <path d="M346 206L266 286L216 236L146 306" stroke="white" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M286 206H346V266" stroke="white" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <defs>
+    <linearGradient id="mbox_gradient" x1="56" y1="56" x2="456" y2="456" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB"/> <stop offset="1" stop-color="#06B6D4"/> </linearGradient>
+  </defs>
+</svg>
