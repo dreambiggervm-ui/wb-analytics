@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef } from 'react';
-import { Upload, Plus, Minus, PackageSearch, Trash2, Edit3, History, ArrowRight, X, Download, FileSpreadsheet, Save, Filter, Link as LinkIcon, Unlink, Box, PackagePlus, CheckSquare } from 'lucide-react';
+import { Upload, Plus, Minus, PackageSearch, Trash2, Edit3, History, ArrowRight, X, Download, FileSpreadsheet, Save, Filter, Link as LinkIcon, Unlink, Box, PackagePlus, CheckSquare, RefreshCw, Settings } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { db, MyStockItem, StockReceipt } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -31,6 +31,12 @@ export default function MyWarehouse() {
   const [kittingItem, setKittingItem] = useState<MyStockItem | null>(null);
   const [kittingItemsPerKit, setKittingItemsPerKit] = useState<number>(2);
   const [kittingCount, setKittingCount] = useState<number>(1);
+
+  // --- НОВОЕ: Состояния для Google Sheets ---
+  const [isSyncingSheets, setIsSyncingSheets] = useState(false);
+  const [isGoogleModalOpen, setIsGoogleModalOpen] = useState(false);
+  const [googleWebhookUrl, setGoogleWebhookUrl] = useState(() => localStorage.getItem('googleSheetWebhookUrl') || '');
+  // ------------------------------------------
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -165,7 +171,6 @@ export default function MyWarehouse() {
     }
   };
 
-  // ОБНОВЛЕННЫЙ ШАБЛОН (ДОБАВЛЕНА КОЛОНКА "ДАТА ПОСТУПЛЕНИЯ")
   const handleDownloadTemplate = () => {
     const data = [{ 
       'Категория': 'Одежда', 
@@ -195,6 +200,39 @@ export default function MyWarehouse() {
     XLSX.utils.book_append_sheet(wb, ws, 'Мой склад');
     XLSX.writeFile(wb, `Мой_Склад_${new Date().toLocaleDateString('ru-RU')}.xlsx`);
   };
+
+  // --- НОВОЕ: Функции работы с Google Sheets ---
+  const handleSaveGoogleUrl = () => {
+    localStorage.setItem('googleSheetWebhookUrl', googleWebhookUrl);
+    setIsGoogleModalOpen(false);
+  };
+
+  const handleSyncGoogleSheets = async () => {
+    if (!googleWebhookUrl) {
+      setIsGoogleModalOpen(true);
+      return;
+    }
+    setIsSyncingSheets(true);
+    try {
+      const payload = stockItems.map(item => ({
+        title: item.title,
+        price: item.price,
+        quantity: item.quantity
+      }));
+
+      await fetch(googleWebhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      alert('Остатки успешно обновлены в Google Таблице!');
+    } catch (err: any) {
+      alert('Ошибка при выгрузке. Проверьте ссылку веб-приложения.\nПодробности: ' + err.message);
+    } finally {
+      setIsSyncingSheets(false);
+    }
+  };
+  // ---------------------------------------------
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -230,12 +268,10 @@ export default function MyWarehouse() {
       // ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПАРСИНГА ДАТЫ ИЗ EXCEL
       const parseExcelDate = (val: any): string | null => {
         if (!val) return null;
-        // 1. Если Excel передает дату как число (серийный номер)
         if (typeof val === 'number') {
           const date = new Date(Math.round((val - 25569) * 86400 * 1000));
           return isNaN(date.getTime()) ? null : date.toISOString().split('T')[0];
         }
-        // 2. Если Excel передает дату как строку "DD.MM.YYYY"
         const strVal = String(val).trim();
         const ruDateMatch = strVal.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
         if (ruDateMatch) {
@@ -244,7 +280,6 @@ export default function MyWarehouse() {
           const date = new Date(`${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`);
           if (!isNaN(date.getTime())) return date.toISOString().split('T')[0];
         }
-        // 3. Стандартный парсинг JS
         const d = new Date(strVal);
         if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
         
@@ -271,7 +306,7 @@ export default function MyWarehouse() {
         let receiptDate = todayDate;
         if (colDate !== -1 && row[colDate]) {
           const parsedDate = parseExcelDate(row[colDate]);
-          if (parsedDate) receiptDate = parsedDate; // Если получилось распарсить, используем эту дату
+          if (parsedDate) receiptDate = parsedDate; 
         }
 
         const existingItem = stockItems.find(item => item.title.toLowerCase() === title.toLowerCase());
@@ -498,6 +533,26 @@ export default function MyWarehouse() {
             </div>
           )}
 
+          {/* НОВОЕ: Блок выгрузки в Google Sheets */}
+          <div className="flex items-center bg-green-50 rounded-lg border border-green-200 shadow-sm mr-2">
+            <button 
+              onClick={handleSyncGoogleSheets} 
+              disabled={isSyncingSheets || stockItems.length === 0}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-bold text-green-700 hover:bg-green-100 disabled:opacity-50 transition-colors border-r border-green-200"
+              title="Выгрузить Наименование, Опт и Остаток в Google Таблицу"
+            >
+              <RefreshCw size={14} className={isSyncingSheets ? 'animate-spin' : ''} />
+              {isSyncingSheets ? 'Синхронизация...' : 'Обновить данные'}
+            </button>
+            <button 
+              onClick={() => setIsGoogleModalOpen(true)} 
+              className="p-1.5 px-2 text-green-600 hover:bg-green-100 rounded-r-lg transition-colors"
+              title="Настройки Google Sheets"
+            >
+              <Settings size={15} />
+            </button>
+          </div>
+
           <Button variant="outline" onClick={handleDownloadTemplate} title="Скачать пустой шаблон для заполнения">
             <FileSpreadsheet size={16} className="text-green-600" /> Шаблон
           </Button>
@@ -637,6 +692,37 @@ export default function MyWarehouse() {
           </div>
         )}
       </TableWrapper>
+
+      {/* НОВОЕ: МОДАЛЬНОЕ ОКНО НАСТРОЕК GOOGLE SHEETS */}
+      {isGoogleModalOpen && (
+        <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
+            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-green-50">
+              <h3 className="text-[16px] font-bold text-green-800 flex items-center gap-2">
+                <FileSpreadsheet size={18} /> Интеграция с Google Таблицами
+              </h3>
+              <button onClick={() => setIsGoogleModalOpen(false)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-white rounded-lg transition-colors"><X size={20} /></button>
+            </div>
+            <div className="p-6">
+              <p className="text-[13px] text-gray-600 mb-4 leading-relaxed">
+                Поскольку приложение работает локально (без сервера), для выгрузки остатков вам необходимо создать <b>Google Apps Script (Web App)</b> в вашей таблице. Вставьте ссылку на развернутое веб-приложение ниже.
+              </p>
+              <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1.5">URL Веб-приложения (Webhook)</label>
+              <input
+                type="text"
+                value={googleWebhookUrl}
+                onChange={e => setGoogleWebhookUrl(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="w-full bg-white border border-green-300 rounded-lg py-2.5 px-3 text-[14px] focus:ring-2 focus:ring-green-500 outline-none"
+              />
+            </div>
+            <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setIsGoogleModalOpen(false)}>Отмена</Button>
+              <Button onClick={handleSaveGoogleUrl} className="bg-green-600 hover:bg-green-700 text-white border-transparent">Сохранить</Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* МОДАЛЬНОЕ ОКНО ПОИСКА WB ДЛЯ ПРИВЯЗКИ */}
       {linkingStockId && (
