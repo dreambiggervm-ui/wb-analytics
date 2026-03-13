@@ -70,6 +70,13 @@ export interface EmallLink {
 }
 
 // ==========================================
+// НОВОЕ: Интерфейс для сохранения состояния приложения
+// ==========================================
+export interface AppState {
+  id: string;
+  value: any;
+}
+// ==========================================
 
 export class WbAnalyticsDB extends Dexie {
   prices!: Table<WholesalePrice>;
@@ -92,6 +99,9 @@ export class WbAnalyticsDB extends Dexie {
   emallProducts!: Table<EmallProduct>;
   emallOrders!: Table<EmallOrder>;
   emallLinks!: Table<EmallLink>;
+
+  // НОВОЕ: Таблица состояния приложения
+  appState!: Table<AppState>;
 
   constructor() {
     super('WbAnalyticsDB');
@@ -136,6 +146,11 @@ export class WbAnalyticsDB extends Dexie {
         }));
         await trans.table('wbLinksV2').bulkAdd(mappedLinks);
       }
+    });
+
+    // ДОБАВЛЕНО: Версия 15: Таблица для сохранения состояния интерфейса (чтобы не сбрасывалось при закрытии)
+    this.version(15).stores({
+      appState: 'id'
     });
   }
 }

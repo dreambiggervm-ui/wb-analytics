@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { DownloadCloud, Search, Plus, X, Check, Loader2, ListTree, RotateCcw, Store, Truck } from 'lucide-react';
-import { db, MyStockItem, ManualOrder, Supplier } from '../db';
+import { db, MyStockItem, Supplier } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { PageLayout, Toolbar } from '../components/ui';
 
@@ -28,12 +28,14 @@ export default function DirectSalesUpload() {
   const stockItems = useLiveQuery(() => db.myWarehouse.toArray()) || [];
   const suppliers = useLiveQuery(() => db.suppliers.toArray()) || []; 
   
-  const [sheets, setSheets] = useState<string[]>(() => JSON.parse(sessionStorage.getItem('ds_sheets') || '[]'));
-  const [activeSheet, setActiveSheet] = useState<string | null>(() => sessionStorage.getItem('ds_active_sheet') || null);
-  const [ordersBySheet, setOrdersBySheet] = useState<Record<string, GoogleSheetOrder[]>>(() => JSON.parse(sessionStorage.getItem('ds_orders_by_sheet') || '{}'));
-  
-  const [selectedItemsByOrder, setSelectedItemsByOrder] = useState<Record<string, SelectedItem[]>>(() => JSON.parse(sessionStorage.getItem('ds_selected_v3') || '{}'));
-  const [processedOrders, setProcessedOrders] = useState<Record<string, number[]>>(() => JSON.parse(sessionStorage.getItem('ds_processed_map_v2') || '{}'));
+  const [isRestored, setIsRestored] = useState(false);
+
+  // Состояния, которые теперь сохраняются в IndexedDB
+  const [sheets, setSheets] = useState<string[]>([]);
+  const [activeSheet, setActiveSheet] = useState<string | null>(null);
+  const [ordersBySheet, setOrdersBySheet] = useState<Record<string, GoogleSheetOrder[]>>({});
+  const [selectedItemsByOrder, setSelectedItemsByOrder] = useState<Record<string, SelectedItem[]>>({});
+  const [processedOrders, setProcessedOrders] = useState<Record<string, number[]>>({});
   
   const [loadingSheets, setLoadingSheets] = useState(false);
   const [loadingData, setLoadingData] = useState(false);
@@ -45,11 +47,39 @@ export default function DirectSalesUpload() {
   const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzEiX2I76i9LreUN7HthYOJmqJQeK8a5owYD-oUwILxG1aiFczr2vFBRpamJSAld3Qf/exec";
   const todayStr = new Date().toISOString().split('T')[0];
 
-  useEffect(() => { sessionStorage.setItem('ds_sheets', JSON.stringify(sheets)); }, [sheets]);
-  useEffect(() => { sessionStorage.setItem('ds_active_sheet', activeSheet || ''); }, [activeSheet]);
-  useEffect(() => { sessionStorage.setItem('ds_orders_by_sheet', JSON.stringify(ordersBySheet)); }, [ordersBySheet]);
-  useEffect(() => { sessionStorage.setItem('ds_selected_v3', JSON.stringify(selectedItemsByOrder)); }, [selectedItemsByOrder]);
-  useEffect(() => { sessionStorage.setItem('ds_processed_map_v2', JSON.stringify(processedOrders)); }, [processedOrders]);
+  // 1. ЗАГРУЗКА СОСТОЯНИЯ ИЗ БД ПРИ СТАРТЕ
+  useEffect(() => {
+    const loadState = async () => {
+      try {
+        const sheetsData = await db.appState.get('ds_sheets');
+        if (sheetsData) setSheets(sheetsData.value);
+
+        const activeSheetData = await db.appState.get('ds_active_sheet');
+        if (activeSheetData) setActiveSheet(activeSheetData.value);
+
+        const ordersData = await db.appState.get('ds_orders_by_sheet');
+        if (ordersData) setOrdersBySheet(ordersData.value);
+
+        const selectedData = await db.appState.get('ds_selected_v3');
+        if (selectedData) setSelectedItemsByOrder(selectedData.value);
+
+        const processedData = await db.appState.get('ds_processed_map_v2');
+        if (processedData) setProcessedOrders(processedData.value);
+      } catch (error) {
+        console.error('Ошибка загрузки состояния из БД:', error);
+      } finally {
+        setIsRestored(true);
+      }
+    };
+    loadState();
+  }, []);
+
+  // 2. ПОСТОЯННОЕ СОХРАНЕНИЕ В БД ПРИ ИЗМЕНЕНИИ
+  useEffect(() => { if (isRestored) db.appState.put({ id: 'ds_sheets', value: sheets }); }, [sheets, isRestored]);
+  useEffect(() => { if (isRestored) db.appState.put({ id: 'ds_active_sheet', value: activeSheet }); }, [activeSheet, isRestored]);
+  useEffect(() => { if (isRestored) db.appState.put({ id: 'ds_orders_by_sheet', value: ordersBySheet }); }, [ordersBySheet, isRestored]);
+  useEffect(() => { if (isRestored) db.appState.put({ id: 'ds_selected_v3', value: selectedItemsByOrder }); }, [selectedItemsByOrder, isRestored]);
+  useEffect(() => { if (isRestored) db.appState.put({ id: 'ds_processed_map_v2', value: processedOrders }); }, [processedOrders, isRestored]);
 
   const fetchSheetsList = async () => {
     setLoadingSheets(true);
@@ -326,6 +356,21 @@ export default function DirectSalesUpload() {
     });
   };
 
+  // Пока данные из БД не загрузились - показываем спиннер, чтобы не стереть их пустым стейтом
+  if (!isRestored) {
+    return (
+      <PageLayout>
+        <Toolbar>
+          <h1 className="text-[16px] font-bold text-[#1e3a5f] uppercase tracking-wider">Загрузка заказов</h1>
+        </Toolbar>
+        <div className="flex flex-1 items-center justify-center bg-[#f8f9fa]">
+          <Loader2 size={32} className="animate-spin text-blue-500" />
+          <span className="ml-3 text-gray-500 font-medium">Восстановление данных...</span>
+        </div>
+      </PageLayout>
+    );
+  }
+
   const currentSheetData = activeSheet ? (ordersBySheet[activeSheet] || []) : [];
 
   return (
@@ -370,9 +415,7 @@ export default function DirectSalesUpload() {
         </div>
       )}
 
-      {/* ГЛАВНЫЙ КОНТЕЙНЕР СКРОЛЛА */}
       <div className="flex-1 overflow-auto bg-[#f8f9fa] relative z-0">
-        {/* ВНУТРЕННИЙ КОНТЕЙНЕР ДЛЯ ОТСТУПОВ (Скроллится ВМЕСТЕ с таблицей, скрывая стык) */}
         <div className="p-4">
           {sheets.length === 0 ? (
             <div className="text-center text-gray-500 mt-20 text-[14px]">
@@ -391,7 +434,6 @@ export default function DirectSalesUpload() {
             <div className="border border-[#cccccc] shadow-sm inline-block min-w-full pb-[400px] bg-white">
               
               <table className="w-full border-collapse font-sans text-[12px] text-gray-900 table-fixed min-w-[1100px]">
-                {/* ЖЕСТКО ЗАФИКСИРОВАННАЯ ШАПКА */}
                 <thead className="text-[#333]">
                   <tr>
                     <th className="sticky top-0 z-[200] bg-[#e8eaed] border border-[#cccccc] py-1 px-2 font-normal text-center" style={{ width: 40, boxShadow: '0 1px 0 #cccccc, 0 -1px 0 #cccccc' }}></th>
