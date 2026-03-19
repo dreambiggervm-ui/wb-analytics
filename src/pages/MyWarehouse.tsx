@@ -171,13 +171,15 @@ export default function MyWarehouse() {
     }
   };
 
+  // ОБНОВЛЕНО: Поддержка колонки Поступление в шаблоне
   const handleDownloadTemplate = () => {
     const data = [{ 
       'Категория': 'Одежда', 
       'Наименование': 'Пример: Футболка белая', 
       'Опт': 500, 
-      'Остаток': 15, 
+      'Поступление': 20,
       'Дата поступления': new Date().toLocaleDateString('ru-RU'),
+      'Остаток': 15,
       'Примечание': 'На витрине' 
     }];
     const ws = XLSX.utils.json_to_sheet(data);
@@ -186,15 +188,21 @@ export default function MyWarehouse() {
     XLSX.writeFile(wb, 'Шаблон_Склада.xlsx');
   };
 
+  // ОБНОВЛЕНО: Поддержка колонки Поступление при экспорте
   const handleExportWarehouse = () => {
     if (stockItems.length === 0) return alert('Склад пуст!');
-    const data = stockItems.map(item => ({
-      'Категория': item.category,
-      'Наименование': item.title,
-      'Опт': item.price,
-      'Остаток': item.quantity,
-      'Примечание': item.note || ''
-    }));
+    const data = stockItems.map(item => {
+      const latestReceipt = item.receipts && item.receipts.length > 0 ? item.receipts[item.receipts.length - 1] : null;
+      return {
+        'Категория': item.category,
+        'Наименование': item.title,
+        'Опт': item.price,
+        'Поступление': latestReceipt ? latestReceipt.quantity : 0,
+        'Дата поступления': latestReceipt ? new Date(latestReceipt.date).toLocaleDateString('ru-RU') : '',
+        'Остаток': item.quantity,
+        'Примечание': item.note || ''
+      };
+    });
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Мой склад');
@@ -234,6 +242,7 @@ export default function MyWarehouse() {
   };
   // ---------------------------------------------
 
+  // ОБНОВЛЕНО: Чтение Excel с поддержкой "Поступления" и партий
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -257,10 +266,11 @@ export default function MyWarehouse() {
       const colTitle = headers.findIndex(h => ['наименование', 'название', 'товар'].includes(h));
       const colCategory = headers.findIndex(h => ['категория', 'раздел', 'группа'].includes(h));
       const colPrice = headers.findIndex(h => ['опт', 'цена', 'закупка'].includes(h));
-      const colStock = headers.findIndex(h => ['остаток', 'склад', 'кол-во', 'количество'].includes(h));
       
-      // ИЩЕМ КОЛОНКУ С ДАТОЙ
-      const colDate = headers.findIndex(h => ['дата', 'поступление', 'дата поступления'].includes(h));
+      const colReceiptQty = headers.findIndex(h => ['поступление', 'партия'].includes(h));
+      const colDate = headers.findIndex(h => ['дата', 'дата поступления'].includes(h));
+      
+      const colStock = headers.findIndex(h => ['остаток', 'склад', 'кол-во', 'количество'].includes(h));
       const colNote = headers.findIndex(h => ['примечание', 'инфо', 'описание'].includes(h));
 
       if (colTitle === -1) throw new Error('Не найдена колонка "Наименование"');
@@ -300,6 +310,7 @@ export default function MyWarehouse() {
         const category = colCategory !== -1 && row[colCategory] ? String(row[colCategory]).trim() : 'Без категории';
         const price = colPrice !== -1 ? parseFloat(String(row[colPrice]).replace(/[^\d.,]/g, '').replace(',', '.')) || 0 : 0;
         const quantity = colStock !== -1 ? parseInt(String(row[colStock]).replace(/[^\d-]/g, ''), 10) || 0 : 0;
+        const receiptQty = colReceiptQty !== -1 ? parseInt(String(row[colReceiptQty]).replace(/[^\d-]/g, ''), 10) || 0 : 0;
         const note = colNote !== -1 && row[colNote] ? String(row[colNote]).trim() : '';
 
         // ОПРЕДЕЛЯЕМ ДАТУ ПОСТУПЛЕНИЯ
@@ -313,10 +324,20 @@ export default function MyWarehouse() {
 
         if (existingItem) {
           let changed = false;
-
-          const addedQty = quantity - existingItem.quantity;
           const newReceipts = existingItem.receipts ? [...existingItem.receipts] : [];
-          if (addedQty > 0) newReceipts.push({ date: receiptDate, quantity: addedQty, price: price });
+
+          // Если явно передано "Поступление", создаем из него партию
+          if (colReceiptQty !== -1 && receiptQty > 0) {
+            newReceipts.push({ date: receiptDate, quantity: receiptQty, price: price });
+            changed = true;
+          } else {
+            // Если колонки поступления нет, считаем по разнице остатков (fallback)
+            const addedQty = quantity - existingItem.quantity;
+            if (addedQty > 0) {
+              newReceipts.push({ date: receiptDate, quantity: addedQty, price: price });
+              changed = true;
+            }
+          }
 
           const updatedItem = { ...existingItem, category, price, quantity, note: note || existingItem.note, receipts: newReceipts };
 
@@ -326,7 +347,9 @@ export default function MyWarehouse() {
 
           if (changed || existingItem.category !== category) itemsToUpdate.push(updatedItem);
         } else {
-          newItemsToSave.push({ title, category, price, quantity, note, receipts: [{ date: receiptDate, quantity, price }] });
+          // Для новых товаров: если есть колонка "Поступление", берем её как партию, иначе берем весь "Остаток"
+          const rQty = (colReceiptQty !== -1 && receiptQty > 0) ? receiptQty : quantity;
+          newItemsToSave.push({ title, category, price, quantity, note, receipts: [{ date: receiptDate, quantity: rQty, price }] });
         }
       }
 
