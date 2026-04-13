@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Save, Search, CheckCircle2, ArrowLeft, Download } from 'lucide-react';
-import { parseExcel, downloadTemplate } from '../utils/excel'; // Добавили downloadTemplate
-import { db, WbProduct } from '../db';
+import { Upload, Save, Search, CheckCircle2, ArrowLeft } from 'lucide-react';
+import { parseExcel, downloadTemplate } from '../utils/excel'; 
+import { db, FbsStockItem } from '../db'; // ОБНОВЛЕНО: Используем FbsStockItem вместо WbProduct
 import { useLiveQuery } from 'dexie-react-hooks';
 
+// ОБНОВЛЕНО: Расширили интерфейс для красивого отображения после привязки
 interface ImportedRow {
   tempId: number;
   name: string;
@@ -13,6 +14,9 @@ interface ImportedRow {
   endDate: string;
   nmId?: number;
   wbTitle?: string;
+  photo?: string;
+  techSize?: string;
+  vendorCode?: string;
 }
 
 export default function PriceImport() {
@@ -23,9 +27,10 @@ export default function PriceImport() {
   const [focusedRow, setFocusedRow] = useState<number | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const wbProducts = useLiveQuery(() => db.products.toArray()) || [];
+  // ОБНОВЛЕНО: Берем товары из fbsStocks (там есть размеры и штрихкоды!)
+  const wbProducts = useLiveQuery(() => db.fbsStocks.toArray()) || [];
 
-  // МАГИЯ №1: Закрываем поиск при клике в любое пустое место экрана
+  // Закрываем поиск при клике в пустое место
   useEffect(() => {
     const handleClickOutside = () => setFocusedRow(null);
     document.addEventListener('mousedown', handleClickOutside);
@@ -51,35 +56,54 @@ export default function PriceImport() {
     }
   };
 
-  const handleSelectProduct = (rowIndex: number, product: WbProduct) => {
+  // ОБНОВЛЕНО: Сохраняем все нужные поля для UI
+  const handleSelectProduct = (rowIndex: number, product: FbsStockItem) => {
     const newRows = [...rows];
-    newRows[rowIndex].nmId = product.nmID;
+    newRows[rowIndex].nmId = product.nmId;
     newRows[rowIndex].wbTitle = product.title;
+    newRows[rowIndex].photo = product.photo;
+    newRows[rowIndex].techSize = product.techSize;
+    newRows[rowIndex].vendorCode = product.vendorCode;
     setRows(newRows);
     setFocusedRow(null);
     setSearchQuery('');
   };
 
   const handleSaveAll = async () => {
-    const pricesToSave = rows.map(r => ({
-      name: r.name,
-      price: r.price,
-      startDate: r.startDate,
-      endDate: r.endDate,
-      nmId: r.nmId
-    }));
+    const pricesToSave = rows
+      .filter(r => r.nmId) // Сохраняем только привязанные
+      .map(r => ({
+        name: r.name,
+        price: r.price,
+        startDate: r.startDate,
+        endDate: r.endDate,
+        nmId: r.nmId
+      }));
 
-    await db.prices.clear();
+    if (pricesToSave.length === 0) return alert('Нет привязанных товаров для сохранения!');
+
+    // ВАЖНО: Мы не делаем db.prices.clear(), чтобы не удалить старые цены других товаров.
+    // Мы удаляем только старые цены ТЕХ товаров, которые сейчас импортируем.
+    const nmIdsToUpdate = pricesToSave.map(p => p.nmId);
+    await db.prices.where('nmId').anyOf(nmIdsToUpdate as number[]).delete();
+    
     await db.prices.bulkAdd(pricesToSave);
-    navigate('/');
+    alert('Цены успешно обновлены!');
+    navigate('/catalog'); // Возвращаемся в каталог
   };
 
-  // МАГИЯ №2: Убрали .slice(0, 5), чтобы показывались все результаты для скролла
-  const filteredProducts = wbProducts.filter(p => 
-    p.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    p.vendorCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    String(p.nmID).includes(searchQuery)
-  );
+  // ОБНОВЛЕНО: Мощный поиск по всем полям, включая штрихкоды и размеры
+  const filteredProducts = useMemo(() => {
+    if (!searchQuery) return wbProducts;
+    const q = searchQuery.toLowerCase().trim();
+    return wbProducts.filter(p => 
+      p.title.toLowerCase().includes(q) || 
+      p.vendorCode.toLowerCase().includes(q) ||
+      String(p.nmId).includes(q) ||
+      (p.techSize && p.techSize.toLowerCase().includes(q)) ||
+      (p.barcodes && p.barcodes.some(b => b.toLowerCase().includes(q)))
+    );
+  }, [wbProducts, searchQuery]);
 
   if (rows.length === 0) {
     return (
@@ -98,7 +122,6 @@ export default function PriceImport() {
             >
               Загрузить заполненный Excel
             </button>
-            {/* Кнопка скачивания шаблона теперь здесь */}
             <button 
               onClick={downloadTemplate}
               className="w-full py-4 bg-gray-50 text-gray-700 rounded-xl text-lg font-semibold hover:bg-gray-100 transition-colors border border-gray-200 cursor-pointer"
@@ -148,24 +171,26 @@ export default function PriceImport() {
                     {row.nmId ? (
                       <div className="flex justify-between items-center bg-green-50 border border-green-200 rounded-xl p-3">
                         <div className="flex items-center gap-3">
-                          <CheckCircle2 size={20} className="text-green-500" />
-                          <div>
-                            <p className="text-sm font-bold text-gray-900 line-clamp-1">{row.wbTitle}</p>
-                            <p className="text-xs text-gray-500">Арт. ВБ: {row.nmId}</p>
+                          {row.photo ? <img src={row.photo} alt="img" className="w-10 h-10 object-cover rounded shadow-sm border border-green-200" /> : <CheckCircle2 size={24} className="text-green-500" />}
+                          <div className="flex flex-col">
+                            <p className="text-[13px] font-bold text-gray-900 line-clamp-1">{row.wbTitle}</p>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[11px] text-gray-500 font-medium">Арт: {row.vendorCode}</span>
+                              {row.techSize && row.techSize !== '0' && <span className="bg-green-100 text-green-700 px-1.5 py-0.5 rounded text-[10px] font-bold">Разм: {row.techSize}</span>}
+                            </div>
                           </div>
                         </div>
-                        <button onClick={() => { const newRows = [...rows]; newRows[index].nmId = undefined; setRows(newRows); }} className="text-xs font-bold text-red-500 hover:text-red-700 bg-white px-3 py-1.5 rounded-lg border border-red-100 shadow-sm cursor-pointer">
+                        <button onClick={() => { const newRows = [...rows]; newRows[index].nmId = undefined; setRows(newRows); }} className="text-xs font-bold text-red-500 hover:text-red-700 bg-white px-3 py-1.5 rounded-lg border border-red-100 shadow-sm cursor-pointer ml-4 transition-colors">
                           Отвязать
                         </button>
                       </div>
                     ) : (
-                      // e.stopPropagation() не дает нашему клику "просочиться" и закрыть окно мгновенно
                       <div className="relative" onMouseDown={(e) => e.stopPropagation()}>
                         <div className="relative">
                           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                           <input 
                             type="text"
-                            placeholder="Поиск по названию или артикулу..."
+                            placeholder="Поиск по названию, артикулу, штрихкоду или размеру..."
                             className="w-full bg-white border border-gray-300 rounded-xl py-2.5 pl-9 pr-4 text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                             onFocus={() => setFocusedRow(index)}
                             onChange={(e) => setSearchQuery(e.target.value)}
@@ -173,17 +198,20 @@ export default function PriceImport() {
                         </div>
 
                         {focusedRow === index && (
-                          // МАГИЯ №3: max-h-64 и overflow-y-auto делают список прокручиваемым!
-                          <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-gray-200 z-50 max-h-64 overflow-y-auto">
+                          <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-xl shadow-xl border border-gray-200 z-50 max-h-72 overflow-y-auto">
                             {filteredProducts.length === 0 ? (
                               <div className="p-4 text-sm text-gray-500 text-center">Ничего не найдено</div>
                             ) : (
                               filteredProducts.map(p => (
-                                <div key={p.nmID} onMouseDown={() => handleSelectProduct(index, p)} className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-3 border-b border-gray-50 last:border-0">
-                                  {p.photo ? <img src={p.photo} alt="img" className="w-8 h-12 object-cover rounded shadow-sm" /> : <div className="w-8 h-12 bg-gray-100 rounded" />}
-                                  <div>
-                                    <p className="text-sm font-bold text-gray-900 line-clamp-1">{p.title}</p>
-                                    <p className="text-xs text-gray-500">Арт: {p.vendorCode} | ШК: {p.nmID}</p>
+                                <div key={p.id} onMouseDown={() => handleSelectProduct(index, p)} className="p-3 hover:bg-blue-50 cursor-pointer flex items-center gap-3 border-b border-gray-50 last:border-0 transition-colors">
+                                  {p.photo ? <img src={p.photo} alt="img" className="w-10 h-14 object-cover rounded shadow-sm border border-gray-200" /> : <div className="w-10 h-14 bg-gray-100 rounded flex items-center justify-center text-[9px] text-gray-400 border border-gray-200">Нет</div>}
+                                  <div className="flex flex-col">
+                                    <p className="text-[13px] font-bold text-gray-900 line-clamp-1">{p.title}</p>
+                                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                                      <span className="text-[11px] text-gray-500 font-medium">Арт: {p.vendorCode}</span>
+                                      {p.techSize && p.techSize !== '0' && <span className="bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded text-[10px] font-bold border border-gray-200">Разм: {p.techSize}</span>}
+                                      {p.barcodes && p.barcodes[0] && <span className="text-[10px] text-gray-400">ШК: {p.barcodes[0]}</span>}
+                                    </div>
                                   </div>
                                 </div>
                               ))

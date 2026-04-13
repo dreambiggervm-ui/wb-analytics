@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { RefreshCw, Edit3, X, Save, Plus, Trash2, PackageSearch, Copy, Check, FileUp, Link as LinkIcon, Box } from 'lucide-react';
+import { RefreshCw, Edit3, X, Save, Plus, Trash2, PackageSearch, Copy, Check, FileUp, Link as LinkIcon, Unlink, Box } from 'lucide-react';
 import { db, FbsStockItem } from '../db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { PageLayout, Toolbar, SearchInput, Button, TableWrapper, EmptyState } from '../components/ui';
@@ -17,7 +17,7 @@ export default function Products() {
   const savedProducts = useLiveQuery(() => db.fbsStocks.toArray()) || [];
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || []; // ОБНОВЛЕНО
+  const wbLinks = useLiveQuery(() => db.wbLinksV2.toArray()) || []; // Используем таблицу V2
 
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedBarcode, setCopiedBarcode] = useState<string | null>(null);
@@ -25,36 +25,53 @@ export default function Products() {
   const [editingProduct, setEditingProduct] = useState<FbsStockItem | null>(null);
   const [modalPrices, setModalPrices] = useState<PricePeriod[]>([]);
 
-  const [linkingProductId, setLinkingProductId] = useState<string | null>(null);
+  const [linkingProduct, setLinkingProduct] = useState<FbsStockItem | null>(null);
   const [linkSearch, setLinkSearch] = useState('');
 
+  // ОБНОВЛЕНО: Привязка конкретного размера (fbsStockId) к складу
   const handleLink = async (myStockItemId: number) => {
-    if (!linkingProductId) return;
-    const targetProduct = processedProducts.find(p => p.id === linkingProductId);
-    if (!targetProduct) return;
+    if (!linkingProduct) return;
     
     const existing = await db.wbLinksV2.toArray();
-    // Проверяем, нет ли уже связи именно с этим размером
-    if (!existing.find((l: any) => (l.wbItemId === targetProduct.id || l.nmId === targetProduct.nmId) && l.myStockItemId === myStockItemId)) {
-      await db.wbLinksV2.add({ nmId: targetProduct.nmId, wbItemId: targetProduct.id, myStockItemId });
+    // Проверка на дубликат
+    if (!existing.find((l: any) => (l.fbsStockId === linkingProduct.id || l.nmId === linkingProduct.nmId) && l.myStockItemId === myStockItemId)) {
+      await db.wbLinksV2.add({ 
+        nmId: linkingProduct.nmId, 
+        fbsStockId: linkingProduct.id, 
+        myStockItemId 
+      });
     }
-    setLinkingProductId(null); setLinkSearch('');
+    setLinkingProduct(null); 
+    setLinkSearch('');
   };
 
-  const handleUnlink = async (productId: string) => {
-    if (window.confirm('Отвязать этот размер от ВСЕХ позиций на "Моем складе"?')) {
+  // ОБНОВЛЕНО: Точечная отвязка конкретного товара со склада
+  const handleUnlinkSingle = async (fbsStockId: string, myStockItemId: number) => {
+    if (window.confirm('Отвязать этот товар со склада от данной карточки WB?')) {
       const links = await db.wbLinksV2.toArray();
-      const toDelete = links.filter((l: any) => l.wbItemId === productId || (!l.wbItemId && l.nmId === parseInt(productId.split('_')[0])));
+      const toDelete = links.filter((l: any) => 
+        (l.fbsStockId === fbsStockId || (!l.fbsStockId && l.nmId === parseInt(fbsStockId.split('_')[0]))) && 
+        l.myStockItemId === myStockItemId
+      );
       for (const link of toDelete) {
         if (link.id) await db.wbLinksV2.delete(link.id);
       }
     }
   };
 
+  // ОБНОВЛЕНО: Мощный поиск по складу
   const searchFilteredMyWarehouse = useMemo(() => {
     if (!linkSearch) return myWarehouse;
-    const q = linkSearch.toLowerCase();
-    return myWarehouse.filter(m => m.title.toLowerCase().includes(q) || (m.category && m.category.toLowerCase().includes(q)));
+    const q = linkSearch.toLowerCase().trim();
+    
+    return myWarehouse.filter(m => {
+      const titleMatch = m.title.toLowerCase().includes(q);
+      const categoryMatch = m.category && m.category.toLowerCase().includes(q);
+      const articleMatch = m.article && m.article.toLowerCase().includes(q);
+      const barcodeMatch = m.barcode && m.barcode.toLowerCase().includes(q);
+      
+      return titleMatch || categoryMatch || articleMatch || barcodeMatch;
+    });
   }, [myWarehouse, linkSearch]);
 
   const processedProducts = useMemo(() => {
@@ -230,15 +247,14 @@ export default function Products() {
                   <th className="px-4 py-2.5 sticky left-0 bg-gray-50 z-30 shadow-[1px_0_0_0_#e5e7eb]">Товар (Фото и Артикул)</th>
                   <th className="px-4 py-2.5 border-r border-gray-100 w-32">Баркоды</th>
                   <th className="px-4 py-2.5 border-r border-gray-100 text-center w-24">Остаток WB</th>
-                  <th className="px-4 py-2.5 border-r border-gray-100 w-40 text-center">Связь с Моим складом</th>
+                  <th className="px-4 py-2.5 border-r border-gray-100 w-64 text-center">Связь с Моим складом</th>
                   <th className="px-4 py-2.5 text-right w-[280px]">Себестоимость</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {processedProducts.map((product) => {
-                  const productLinks = wbLinks.filter((l: any) => l.wbItemId ? l.wbItemId === product.id : l.nmId === product.nmId);
+                  const productLinks = wbLinks.filter((l: any) => l.fbsStockId ? l.fbsStockId === product.id : l.nmId === product.nmId);
                   const linkedItems = productLinks.map((l: any) => myWarehouse.find(m => m.id === l.myStockItemId)).filter(Boolean);
-                  const totalQty = linkedItems.reduce((sum: any, item: any) => sum + (item!.quantity || 0), 0);
                   const firstLinkedItem = linkedItems[0];
                   const latestReceipt = firstLinkedItem?.receipts && firstLinkedItem.receipts.length > 0 ? firstLinkedItem.receipts[firstLinkedItem.receipts.length - 1] : null;
 
@@ -273,23 +289,31 @@ export default function Products() {
                          <div className="inline-flex items-center justify-center min-w-[36px] h-[28px] px-2 bg-gray-50 border border-gray-200 rounded-md text-[13px] font-bold text-gray-800 shadow-sm">{product.totalAmount}</div>
                       </td>
 
-                      <td className="px-4 py-3 border-r border-gray-100 align-middle bg-indigo-50/10">
-                        {linkedItems.length > 0 ? (
-                          <div className="flex flex-col items-center justify-center gap-1">
-                            <div className="flex items-center gap-1.5" title={linkedItems.map((i: any) => i?.title).join('\n')}>
-                              <Box size={12} className="text-indigo-400" />
-                              <span className={`text-[14px] font-bold ${totalQty > 0 ? 'text-green-600' : 'text-red-500'}`}>Остаток: {totalQty} шт</span>
-                            </div>
-                            {linkedItems.length > 1 && <span className="text-[9px] text-gray-500 font-medium">({linkedItems.length} позиций на складе)</span>}
-                            <button onClick={() => handleUnlink(product.id)} className="text-[10px] font-bold text-indigo-300 hover:text-red-500 transition-colors mt-0.5" title="Отвязать товар от склада">Отвязать</button>
-                          </div>
-                        ) : (
-                          <div className="flex justify-center">
-                            <button onClick={() => setLinkingProductId(product.id)} className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-bold text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-300 rounded transition-all opacity-60 group-hover:opacity-100">
-                              <LinkIcon size={12} /> Привязать к складу
-                            </button>
-                          </div>
-                        )}
+                      {/* ОБНОВЛЕНО: Новый интерфейс связей (аналогично "Мой склад") */}
+                      <td className="px-4 py-3 border-r border-gray-100 align-middle">
+                        <div className="flex flex-col gap-2">
+                          {linkedItems.map(mItem => (
+                             <div key={mItem!.id} className="flex items-center justify-between gap-3 px-2 py-1.5 bg-indigo-50/30 rounded-lg border border-indigo-100">
+                               <div className="flex flex-col max-w-[200px] whitespace-normal break-words">
+                                 <span className="text-[11px] font-bold text-indigo-900 leading-tight line-clamp-1" title={mItem!.title}>{mItem!.title}</span>
+                                 <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                                   {mItem!.article && <span className="text-[10px] text-gray-500">Арт: {mItem!.article}</span>}
+                                   {mItem!.barcode && <span className="text-[10px] text-gray-500">ШК: {mItem!.barcode}</span>}
+                                   <span className={`text-[10px] font-bold ${mItem!.quantity > 0 ? 'text-green-600' : 'text-red-500'}`}>Ост: {mItem!.quantity} шт</span>
+                                 </div>
+                               </div>
+                               <button onClick={() => handleUnlinkSingle(product.id, mItem!.id!)} className="text-indigo-300 hover:text-red-500 transition-colors flex-shrink-0" title="Отвязать этот товар со склада">
+                                 <Unlink size={14} />
+                               </button>
+                             </div>
+                          ))}
+                          <button 
+                            onClick={() => setLinkingProduct(product)} 
+                            className="inline-flex w-max items-center gap-1 text-[11px] font-bold text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded transition-colors"
+                          >
+                            <LinkIcon size={12} /> {linkedItems.length > 0 ? 'Привязать еще товар со склада' : 'Привязать к складу'}
+                          </button>
+                        </div>
                       </td>
 
                       <td className="px-4 py-3 text-right align-middle">
@@ -336,32 +360,45 @@ export default function Products() {
         )}
       </TableWrapper>
 
-      {linkingProductId && (
+      {/* ОБНОВЛЕНО: Модальное окно с мощным поиском */}
+      {linkingProduct && (
         <div className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col h-[70vh] animate-in fade-in zoom-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden flex flex-col h-[75vh] animate-in fade-in zoom-in duration-200">
             <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-indigo-50/80">
               <div>
-                <h3 className="text-[16px] font-bold text-indigo-900 flex items-center gap-2"><LinkIcon size={18} className="text-indigo-600" /> Связь с Моим складом</h3>
-                <p className="text-[12px] text-indigo-600/70 mt-1">Выберите товар из вашей базы для привязки</p>
+                <h3 className="text-[16px] font-bold text-indigo-900 flex items-center gap-2">
+                  <LinkIcon size={18} className="text-indigo-600" /> Связь с Моим складом
+                </h3>
+                <p className="text-[12px] text-indigo-600/70 mt-1">
+                  Привязка для ВБ: <span className="font-bold">{linkingProduct.vendorCode}</span> 
+                  {linkingProduct.techSize && linkingProduct.techSize !== '0' ? ` (Размер: ${linkingProduct.techSize})` : ''}
+                </p>
               </div>
-              <button onClick={() => {setLinkingProductId(null); setLinkSearch('');}} className="p-1.5 text-indigo-400 hover:text-indigo-700 hover:bg-white rounded-lg transition-colors shadow-sm border border-transparent hover:border-indigo-200"><X size={20} /></button>
+              <button onClick={() => {setLinkingProduct(null); setLinkSearch('');}} className="p-1.5 text-indigo-400 hover:text-indigo-700 hover:bg-white rounded-lg transition-colors shadow-sm border border-transparent hover:border-indigo-200"><X size={20} /></button>
             </div>
             <div className="p-4 border-b border-gray-100 bg-white">
-               <SearchInput value={linkSearch} onChange={setLinkSearch} placeholder="Поиск по Моему складу..." />
+               <SearchInput value={linkSearch} onChange={setLinkSearch} placeholder="Поиск по названию, артикулу, штрихкоду или категории..." />
             </div>
-            <div className="overflow-y-auto flex-1 p-2 space-y-1 bg-gray-50/50">
+            <div className="overflow-y-auto flex-1 p-3 space-y-2 bg-gray-50/50">
               {searchFilteredMyWarehouse.length === 0 ? (
-                <div className="text-center p-8 text-gray-400 text-[13px]"><Box size={32} className="mx-auto mb-2 opacity-50" />Товары не найдены. <br/>Сначала добавьте их в разделе "Мой Склад".</div>
+                <div className="text-center p-8 text-gray-400 text-[13px]">
+                  <Box size={32} className="mx-auto mb-2 opacity-50" />
+                  Товары не найдены. <br/>Попробуйте изменить запрос или добавьте товар в разделе "Мой Склад".
+                </div>
               ) : (
                 searchFilteredMyWarehouse.map(mItem => (
-                  <div key={mItem.id} onClick={() => handleLink(mItem.id!)} className="flex items-center justify-between p-3 bg-white border border-gray-100 rounded-xl cursor-pointer hover:border-indigo-300 hover:bg-indigo-50 transition-all shadow-sm">
-                    <div className="flex flex-col pr-4">
-                      <span className="text-[13px] font-bold text-gray-800 leading-snug">{mItem.title}</span>
-                      <span className="text-[11px] font-medium text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded mt-1.5 inline-block w-max">{mItem.category || 'Без категории'}</span>
+                  <div key={mItem.id} onClick={() => handleLink(mItem.id!)} className="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-xl cursor-pointer hover:border-indigo-400 hover:bg-indigo-50 hover:shadow-md transition-all">
+                    <div className="flex flex-col pr-4 gap-1">
+                      <span className="text-[14px] font-bold text-gray-800 leading-tight">{mItem.title}</span>
+                      <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                        {mItem.article && <span className="text-[11px] font-medium text-gray-500">Арт: {mItem.article}</span>}
+                        {mItem.barcode && <span className="text-[11px] font-medium text-gray-500">ШК: {mItem.barcode}</span>}
+                        <span className="text-[10px] font-bold text-indigo-600 bg-indigo-100 px-1.5 py-0.5 rounded">{mItem.category || 'Без категории'}</span>
+                      </div>
                     </div>
-                    <div className="flex flex-col items-end flex-shrink-0">
+                    <div className="flex flex-col items-end flex-shrink-0 bg-gray-50 px-3 py-2 rounded-lg border border-gray-100">
                       <span className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Остаток</span>
-                      <span className={`text-[14px] font-black ${mItem.quantity > 0 ? 'text-green-600' : 'text-red-500'}`}>{mItem.quantity} шт</span>
+                      <span className={`text-[15px] font-black ${mItem.quantity > 0 ? 'text-green-600' : 'text-red-500'}`}>{mItem.quantity} шт</span>
                     </div>
                   </div>
                 ))

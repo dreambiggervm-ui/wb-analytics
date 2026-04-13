@@ -28,8 +28,13 @@ export interface WbSupply { id: string; name: string; createdAt: string; closedA
 export interface WbOrder { id: number; supplyId?: string; article: string; title: string; price: number; supplierStatus?: string; createdAt: string; localDeducted?: boolean; nmId?: number; }
 export interface WbLink { nmId: number; myStockItemId: number; }
 
-// НОВОЕ: Интерфейс для wbLinks с уникальным id
-export interface WbLinkV2 { id?: number; nmId: number; wbItemId?: string; myStockItemId: number; }
+// НОВОЕ: Интерфейс для wbLinks с уникальным id и учетом размера (fbsStockId)
+export interface WbLinkV2 { 
+  id?: number; 
+  fbsStockId: string; // Уникальный ID вариации (nmId_techSize) - заменяет абстрактный wbItemId для точной связи
+  nmId: number; 
+  myStockItemId: number; 
+}
 
 // Интерфейс для ручных отгрузок (Заказы со склада)
 export interface ManualOrder {
@@ -130,10 +135,10 @@ export class WbAnalyticsDB extends Dexie {
       emallLinks: 'emallProductId, myStockItemId'
     });
 
-    // ДОБАВЛЕНО: Версия 14: Изменение ключа wbLinks для поддержки множественных связей
+    // ДОБАВЛЕНО: Версия 14: Изменение ключа wbLinks для поддержки множественных связей (учет размеров)
     this.version(14).stores({
       wbLinks: 'nmId, myStockItemId', 
-      wbLinksV2: '++id, nmId, wbItemId, myStockItemId' 
+      wbLinksV2: '++id, fbsStockId, nmId, myStockItemId' // Индексируем по fbsStockId для точного поиска
     }).upgrade(async trans => {
       // Переносим данные из старой таблицы в новую, если они есть
       const oldLinks = await trans.table('wbLinks').toArray();
@@ -141,6 +146,7 @@ export class WbAnalyticsDB extends Dexie {
       if (oldLinks.length > 0 && newLinksCount === 0) {
         // Убираем nmId в качестве первичного ключа и переносим данные
         const mappedLinks = oldLinks.map((l: any) => ({
+          fbsStockId: String(l.nmId), // Делаем fallback на nmId для старых связей
           nmId: l.nmId,
           myStockItemId: l.myStockItemId
         }));
