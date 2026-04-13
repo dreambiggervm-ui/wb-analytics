@@ -81,12 +81,10 @@ export default function Reports() {
   const [isExporting, setIsExporting] = useState(false);
 
   const savedPrices = useLiveQuery(() => db.prices.toArray()) || [];
-  // ИСПОЛЬЗУЕМ НОВЫЙ КАТАЛОГ ИЗ fbsStocks
   const savedProducts = useLiveQuery(() => db.fbsStocks.toArray()) || [];
   const rawReports = useLiveQuery(() => db.rawReports.toArray()) || [];
   
   const myWarehouse = useLiveQuery(() => db.myWarehouse.toArray()) || [];
-  // ИСПОЛЬЗУЕМ НОВУЮ ТАБЛИЦУ СВЯЗЕЙ
   const wbLinksV2 = useLiveQuery(() => (db as any).wbLinksV2?.toArray()) || [];
 
   const loadNewReports = async () => {
@@ -145,7 +143,7 @@ export default function Reports() {
         let dataToExport = [...rawReports];
         if (exportDateFrom || exportDateTo) {
           dataToExport = dataToExport.filter(item => {
-            const date = (item.rr_dt || item.create_dt || '').split('T')[0];
+            const date = (item.order_dt || item.rr_dt || '').split('T')[0];
             if (!date) return false;
             if (exportDateFrom && date < exportDateFrom) return false;
             if (exportDateTo && date > exportDateTo) return false;
@@ -193,7 +191,6 @@ export default function Reports() {
       if (myItem && myItem.receipts && myItem.receipts.length > 0) {
         const currentReceipts = myItem.receipts.map(r => ({...r, used: 0}));
         const existing = nmReceiptsMap.get(link.nmId) || [];
-        // Объединяем партии, если к одному nmId привязано несколько складов
         const combined = [...existing, ...currentReceipts].sort((a, b) => a.date.localeCompare(b.date));
         nmReceiptsMap.set(link.nmId, combined);
       }
@@ -252,7 +249,7 @@ export default function Reports() {
 
     const filteredRaw = rawReports.filter(row => {
       if (!globalDateStart && !globalDateEnd) return true;
-      const rowDate = (row.rr_dt || row.create_dt || '').split('T')[0];
+      const rowDate = (row.order_dt || row.rr_dt || '').split('T')[0];
       if (!rowDate) return false;
       if (globalDateStart && rowDate < globalDateStart) return false;
       if (globalDateEnd && rowDate > globalDateEnd) return false;
@@ -312,7 +309,6 @@ export default function Reports() {
     const uniqueMissingMap = new Map();
 
     const detailedList = Array.from(shkMap.values()).map(unit => {
-      // Ищем продукт в fbsStocks по nmId
       const dbProduct = savedProducts.find(p => p.nmId === unit.nm_id);
       if (dbProduct) {
         unit.title = dbProduct.title;
@@ -410,7 +406,7 @@ export default function Reports() {
         soldQty,
         returnedQty,
         topProducts: productList.slice(0, 10),
-        topShks: detailedList.slice(0, 10)
+        worstProducts: [...productList].sort((a, b) => a.profit - b.profit).slice(0, 10)
       }
     };
   }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd, myWarehouse, wbLinksV2]);
@@ -444,7 +440,7 @@ export default function Reports() {
     
     if (rawDateStart || rawDateEnd) {
       result = result.filter(item => {
-        const date = (item.rr_dt || item.create_dt || '').split('T')[0];
+        const date = (item.order_dt || item.rr_dt || '').split('T')[0];
         if (!date) return false;
         if (rawDateStart && date < rawDateStart) return false;
         if (rawDateEnd && date > rawDateEnd) return false;
@@ -464,7 +460,7 @@ export default function Reports() {
     result.sort((a, b) => {
       let valA: any, valB: any;
       if (rawSortField === 'date') {
-        valA = a.rr_dt || a.create_dt || ''; valB = b.rr_dt || b.create_dt || '';
+        valA = a.order_dt || a.rr_dt || ''; valB = b.order_dt || b.rr_dt || '';
         return rawSortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
       } else if (rawSortField === 'amount') {
         valA = a.ppvz_for_pay || 0; valB = b.ppvz_for_pay || 0;
@@ -568,30 +564,55 @@ export default function Reports() {
               <h2 className="text-xl font-black text-red-500 mt-1">-{dashboardData.logistics.toLocaleString('ru-RU')} / -{dashboardData.penalties.toLocaleString('ru-RU')}</h2>
             </div>
           </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-[16px] font-bold text-gray-900">Детализация чистой прибыли по ШК (Топ-10)</h3>
-              <Button variant="outline" onClick={() => setActiveTab(2)} className="!py-1.5 text-[12px]">Смотреть все ШК</Button>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+            {/* Самые прибыльные товары */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-[16px] font-bold text-gray-900">Самые прибыльные товары</h3>
+                <Button variant="outline" onClick={() => setActiveTab(3)} className="!py-1.5 text-[12px]">Аналитика</Button>
+              </div>
+              <div className="space-y-3">
+                {dashboardData.topProducts.map((p: any, i: number) => (
+                  <div key={p.nm_id} className="flex items-center gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
+                    <div className="w-8 font-bold text-gray-400 text-sm">#{i+1}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-[14px] text-gray-900 truncate" title={p.title}>{p.title}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5 truncate">Арт: {p.vendorCode}</p>
+                    </div>
+                    <div className="text-right flex flex-col items-end flex-shrink-0">
+                      <span className={`font-bold text-[15px] px-2 py-0.5 rounded ${p.profit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {p.profit > 0 ? '+' : ''}{p.profit.toLocaleString('ru-RU')} р
+                      </span>
+                      <span className="text-[11px] text-gray-500 mt-1">Продано: {p.soldCount} шт.</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="space-y-3">
-              {dashboardData.topShks.map((p: any, i: number) => (
-                <div key={p.shk_id} className="flex items-center gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
-                  <div className="w-8 font-bold text-gray-400 text-sm">#{i+1}</div>
-                  <div className="w-24 font-mono font-bold text-[12px] text-gray-500 bg-white px-2 py-1 rounded border border-gray-200 text-center">
-                    {p.shk_id !== 0 ? p.shk_id : 'Сводно'}
+
+            {/* Самые убыточные товары */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-[16px] font-bold text-gray-900">Самые убыточные товары</h3>
+              </div>
+              <div className="space-y-3">
+                {dashboardData.worstProducts.map((p: any, i: number) => (
+                  <div key={p.nm_id} className="flex items-center gap-4 bg-gray-50 p-3 rounded-lg border border-gray-100">
+                    <div className="w-8 font-bold text-gray-400 text-sm">#{i+1}</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-[14px] text-gray-900 truncate" title={p.title}>{p.title}</p>
+                      <p className="text-[11px] text-gray-500 mt-0.5 truncate">Арт: {p.vendorCode}</p>
+                    </div>
+                    <div className="text-right flex flex-col items-end flex-shrink-0">
+                      <span className={`font-bold text-[15px] px-2 py-0.5 rounded ${p.profit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                        {p.profit > 0 ? '+' : ''}{p.profit.toLocaleString('ru-RU')} р
+                      </span>
+                      <span className="text-[11px] text-gray-500 mt-1">Возвраты: {p.returnCount} шт.</span>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <p className="font-semibold text-[14px] text-gray-900 truncate max-w-md">{p.title}</p>
-                    <p className="text-[11px] text-gray-500 mt-0.5">Арт: {p.vendorCode}</p>
-                  </div>
-                  <div className="text-right flex flex-col items-end">
-                    <span className={`font-bold text-[15px] px-2 py-0.5 rounded ${p.netProfit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                      {p.netProfit > 0 ? '+' : ''}{p.netProfit.toLocaleString('ru-RU')} р
-                    </span>
-                    <span className="text-[11px] text-gray-500 mt-1">Себест: {p.cost.toFixed(2)} р</span>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         </div>
