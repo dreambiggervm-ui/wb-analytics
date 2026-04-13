@@ -241,172 +241,268 @@ export default function Reports() {
       shkCostMap.set(`rrd_${sale.rrd_id}`, unitCost);
     });
 
-    const shkMap = new Map<number, any>();
-    const nmMap = new Map<number, any>();
+    // Расчет дат для текущего и предыдущего периодов
+    let hasP = false;
+    let curStartStr = '', curEndStr = '', prevStartStr = '', prevEndStr = '';
     
-    let totalSales = 0, totalLog = 0, totalOther = 0, totalCost = 0, totalTax = 0;
-    let shippedQty = 0, soldQty = 0, returnedQty = 0;
+    if (globalDateStart || globalDateEnd) {
+      hasP = true;
+      let cStart = globalDateStart ? new Date(globalDateStart) : new Date(globalDateEnd);
+      let cEnd = globalDateEnd ? new Date(globalDateEnd) : new Date();
+      if (!globalDateStart) cStart.setDate(cStart.getDate() - 30);
 
-    const filteredRaw = rawReports.filter(row => {
-      if (!globalDateStart && !globalDateEnd) return true;
+      const diffTime = cEnd.getTime() - cStart.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1;
+
+      const pEnd = new Date(cStart);
+      pEnd.setDate(pEnd.getDate() - 1);
+
+      const pStart = new Date(pEnd);
+      pStart.setDate(pStart.getDate() - diffDays + 1);
+
+      curStartStr = cStart.toISOString().split('T')[0];
+      curEndStr = cEnd.toISOString().split('T')[0];
+      prevStartStr = pStart.toISOString().split('T')[0];
+      prevEndStr = pEnd.toISOString().split('T')[0];
+    }
+
+    const currentFilteredRaw = rawReports.filter(row => {
+      if (!hasP && !globalDateStart && !globalDateEnd) return true;
       const rowDate = (row.order_dt || row.rr_dt || '').split('T')[0];
       if (!rowDate) return false;
-      if (globalDateStart && rowDate < globalDateStart) return false;
-      if (globalDateEnd && rowDate > globalDateEnd) return false;
+      if (curStartStr && rowDate < curStartStr) return false;
+      if (curEndStr && rowDate > curEndStr) return false;
       return true;
     });
 
-    filteredRaw.forEach(row => {
-      shippedQty += (row.delivery_amount || 0);
-      returnedQty += (row.return_amount || 0);
-      
-      const docType = (row.doc_type_name || "").toLowerCase();
-      const operName = (row.supplier_oper_name || "").toLowerCase();
-      
-      if (docType === 'продажа' || operName.includes('компенсация')) {
-        soldQty += (row.quantity || 1);
-      }
+    const prevFilteredRaw = hasP ? rawReports.filter(row => {
+      const rowDate = (row.order_dt || row.rr_dt || '').split('T')[0];
+      if (!rowDate) return false;
+      return rowDate >= prevStartStr && rowDate <= prevEndStr;
+    }) : [];
 
-      const shk = row.shk_id || 0; 
-      if (!shkMap.has(shk)) {
-        shkMap.set(shk, {
-          shk_id: shk, nm_id: row.nm_id || 0,
-          title: row.subject_name || (shk === 0 ? 'Сводные операции' : 'Неизвестно'),
-          vendorCode: row.sa_name || '',
-          barcode: row.barcode || '',
-          sale_amount: 0, return_amount: 0, logistics_amount: 0, other_expenses: 0, 
-          first_date: null, original_items: [], aggregatedCost: 0
-        });
-      }
+    // Универсальная функция обработки массива отчетов
+    const processData = (rawData: any[]) => {
+      let totalSales = 0, totalLog = 0, totalOther = 0, totalCost = 0, totalTax = 0;
+      let shippedQty = 0, soldQty = 0, returnedQty = 0;
+      const shkMap = new Map();
+      const nmMap = new Map();
+      const uniqueMissingMap = new Map();
 
-      const unit = shkMap.get(shk);
-      unit.original_items.push(row);
+      rawData.forEach(row => {
+        shippedQty += (row.delivery_amount || 0);
+        returnedQty += (row.return_amount || 0);
+        
+        const docType = (row.doc_type_name || "").toLowerCase();
+        const operName = (row.supplier_oper_name || "").toLowerCase();
+        
+        if (docType === 'продажа' || operName.includes('компенсация')) {
+          soldQty += (row.quantity || 1);
+        }
 
-      if (!unit.vendorCode && row.sa_name) unit.vendorCode = row.sa_name;
-      if (unit.nm_id === 0 && row.nm_id) unit.nm_id = row.nm_id;
-      if (!unit.barcode && row.barcode) unit.barcode = row.barcode;
-      if ((unit.title === 'Неизвестно' || !unit.title) && row.subject_name) unit.title = row.subject_name;
+        const shk = row.shk_id || 0; 
+        if (!shkMap.has(shk)) {
+          shkMap.set(shk, {
+            shk_id: shk, nm_id: row.nm_id || 0,
+            title: row.subject_name || (shk === 0 ? 'Сводные операции' : 'Неизвестно'),
+            vendorCode: row.sa_name || '',
+            barcode: row.barcode || '',
+            sale_amount: 0, return_amount: 0, logistics_amount: 0, other_expenses: 0, 
+            first_date: null, original_items: [], aggregatedCost: 0
+          });
+        }
 
-      const opDate = (row.order_dt || row.rr_dt || '').split('T')[0];
-      if (opDate && (!unit.first_date || opDate < unit.first_date)) {
-        unit.first_date = opDate;
-      }
+        const unit = shkMap.get(shk);
+        unit.original_items.push(row);
 
-      const ppvz = row.ppvz_for_pay || 0;
+        if (!unit.vendorCode && row.sa_name) unit.vendorCode = row.sa_name;
+        if (unit.nm_id === 0 && row.nm_id) unit.nm_id = row.nm_id;
+        if (!unit.barcode && row.barcode) unit.barcode = row.barcode;
+        if ((unit.title === 'Неизвестно' || !unit.title) && row.subject_name) unit.title = row.subject_name;
 
-      if (docType === 'продажа') { unit.sale_amount += ppvz; } 
-      else if (docType === 'возврат') { unit.return_amount += ppvz; } 
-      else if (operName.includes('компенсация')) { unit.sale_amount += ppvz; }
+        const opDate = (row.order_dt || row.rr_dt || '').split('T')[0];
+        if (opDate && (!unit.first_date || opDate < unit.first_date)) {
+          unit.first_date = opDate;
+        }
 
-      unit.logistics_amount += row.delivery_rub || 0;
-      unit.other_expenses += (row.penalty || 0) + (row.deduction || 0) + (row.acceptance || 0) + (row.storage_fee || 0) + (row.rebill_logistic_cost || 0);
+        const ppvz = row.ppvz_for_pay || 0;
 
-      if (shk === 0 && (docType === 'продажа' || operName.includes('компенсация'))) {
-        unit.aggregatedCost += (shkCostMap.get(`rrd_${row.rrd_id}`) || 0) * (row.quantity || 1);
-      }
-    });
+        if (docType === 'продажа') { unit.sale_amount += ppvz; } 
+        else if (docType === 'возврат') { unit.return_amount += ppvz; } 
+        else if (operName.includes('компенсация')) { unit.sale_amount += ppvz; }
 
-    const uniqueMissingMap = new Map();
+        unit.logistics_amount += row.delivery_rub || 0;
+        unit.other_expenses += (row.penalty || 0) + (row.deduction || 0) + (row.acceptance || 0) + (row.storage_fee || 0) + (row.rebill_logistic_cost || 0);
 
-    const detailedList = Array.from(shkMap.values()).map(unit => {
-      const dbProduct = savedProducts.find(p => p.nmId === unit.nm_id);
-      if (dbProduct) {
-        unit.title = dbProduct.title;
-        if (!unit.vendorCode) unit.vendorCode = dbProduct.vendorCode;
-      }
-
-      unit.original_items.sort((a: any, b: any) => new Date(a.rr_dt).getTime() - new Date(b.rr_dt).getTime());
-
-      let finalStatus = 'В пути / Обработка';
-
-      unit.original_items.forEach((op: any) => {
-        const docType = (op.doc_type_name || '').toLowerCase();
-        const operName = (op.supplier_oper_name || '').toLowerCase();
-        const bonusName = (op.bonus_type_name || '').toLowerCase();
-
-        if (operName.includes('к клиенту при продаже')) finalStatus = 'В пути / Обработка'; 
-        if (docType === 'продажа' || operName.includes('компенсация')) finalStatus = 'Продажа';
-        if (operName.includes('от клиента при отмене') || operName.includes('к клиенту при отмене') || docType === 'возврат') finalStatus = 'Отмена / Возврат';
-
-        if (operName.includes('возврат брака') || bonusName.includes('возврат брака')) finalStatus = 'Возврат брака (К продавцу)';
-        else if (operName.includes('возврат кгт') || bonusName.includes('возврат кгт')) finalStatus = 'Возврат КГТ продавцу (К продавцу)';
-        else if (operName.includes('приехал по мп') || bonusName.includes('приехал по мп')) finalStatus = 'Возврат по МП (К продавцу)';
-        else if (operName.includes('возврат продавцу') || bonusName.includes('возврат продавцу')) finalStatus = 'Возвращен продавцу';
+        if (shk === 0 && (docType === 'продажа' || operName.includes('компенсация'))) {
+          unit.aggregatedCost += (shkCostMap.get(`rrd_${row.rrd_id}`) || 0) * (row.quantity || 1);
+        }
       });
 
-      if (unit.shk_id === 0) unit.status = 'Сводные расходы';
-      else unit.status = finalStatus;
-
-      if (unit.shk_id !== 0) {
-         if (shkCostMap.get(unit.shk_id) !== undefined) {
-             unit.cost = shkCostMap.get(unit.shk_id);
-         } else {
-             const receipts = nmReceiptsMap.get(unit.nm_id);
-             if (receipts && receipts.length > 0) {
-                 unit.cost = receipts[receipts.length - 1].price;
-             } else {
-                 unit.cost = getPriceForDate(unit.nm_id, unit.first_date, savedPrices);
-             }
-         }
-      } else {
-         unit.cost = unit.aggregatedCost || 0;
-      }
-      
-      unit.isLinked = wbLinksV2.some((l: any) => l.nmId === unit.nm_id);
-
-      if (unit.nm_id !== 0 && unit.cost === 0 && !uniqueMissingMap.has(unit.nm_id)) {
-        uniqueMissingMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode });
-      }
-
-      unit.net_sales = unit.sale_amount - unit.return_amount;
-      const isSold = unit.status === 'Продажа' && unit.net_sales > 0;
-      unit.isSold = isSold;
-
-      const costToDeduct = isSold ? unit.cost : 0;
-      
-      const taxBase = unit.net_sales - unit.logistics_amount - costToDeduct;
-      unit.tax = taxBase > 0 ? taxBase * 0.2 : 0;
-      unit.netProfit = unit.net_sales - unit.logistics_amount - unit.other_expenses - costToDeduct - unit.tax;
-
-      totalSales += unit.net_sales;
-      totalLog += unit.logistics_amount;
-      totalOther += unit.other_expenses;
-      totalCost += costToDeduct;
-      totalTax += unit.tax;
-
-      if (unit.nm_id !== 0) {
-        if (!nmMap.has(unit.nm_id)) {
-          nmMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode, soldCount: 0, returnCount: 0, revenue: 0, profit: 0 });
+      const detailedList = Array.from(shkMap.values()).map(unit => {
+        const dbProduct = savedProducts.find(p => p.nmId === unit.nm_id);
+        if (dbProduct) {
+          unit.title = dbProduct.title;
+          if (!unit.vendorCode) unit.vendorCode = dbProduct.vendorCode;
         }
-        const prodGroup = nmMap.get(unit.nm_id);
-        if (isSold) prodGroup.soldCount++;
-        if (unit.status.includes('Возврат') || unit.status === 'Отмена / Возврат') prodGroup.returnCount++;
-        prodGroup.revenue += unit.net_sales;
-        prodGroup.profit += unit.netProfit;
-      }
-      return unit;
-    }).sort((a, b) => b.netProfit - a.netProfit);
 
-    const productList = Array.from(nmMap.values()).sort((a, b) => b.profit - a.profit);
-    const finalTotalPayout = totalSales - totalLog - totalOther;
+        unit.original_items.sort((a: any, b: any) => new Date(a.rr_dt).getTime() - new Date(b.rr_dt).getTime());
+
+        let finalStatus = 'В пути / Обработка';
+
+        unit.original_items.forEach((op: any) => {
+          const docType = (op.doc_type_name || '').toLowerCase();
+          const operName = (op.supplier_oper_name || '').toLowerCase();
+          const bonusName = (op.bonus_type_name || '').toLowerCase();
+
+          if (operName.includes('к клиенту при продаже')) finalStatus = 'В пути / Обработка'; 
+          if (docType === 'продажа' || operName.includes('компенсация')) finalStatus = 'Продажа';
+          if (operName.includes('от клиента при отмене') || operName.includes('к клиенту при отмене') || docType === 'возврат') finalStatus = 'Отмена / Возврат';
+
+          if (operName.includes('возврат брака') || bonusName.includes('возврат брака')) finalStatus = 'Возврат брака (К продавцу)';
+          else if (operName.includes('возврат кгт') || bonusName.includes('возврат кгт')) finalStatus = 'Возврат КГТ продавцу (К продавцу)';
+          else if (operName.includes('приехал по мп') || bonusName.includes('приехал по мп')) finalStatus = 'Возврат по МП (К продавцу)';
+          else if (operName.includes('возврат продавцу') || bonusName.includes('возврат продавцу')) finalStatus = 'Возвращен продавцу';
+        });
+
+        if (unit.shk_id === 0) unit.status = 'Сводные расходы';
+        else unit.status = finalStatus;
+
+        if (unit.shk_id !== 0) {
+           if (shkCostMap.get(unit.shk_id) !== undefined) {
+               unit.cost = shkCostMap.get(unit.shk_id);
+           } else {
+               const receipts = nmReceiptsMap.get(unit.nm_id);
+               if (receipts && receipts.length > 0) {
+                   unit.cost = receipts[receipts.length - 1].price;
+               } else {
+                   unit.cost = getPriceForDate(unit.nm_id, unit.first_date, savedPrices);
+               }
+           }
+        } else {
+           unit.cost = unit.aggregatedCost || 0;
+        }
+        
+        unit.isLinked = wbLinksV2.some((l: any) => l.nmId === unit.nm_id);
+
+        if (unit.nm_id !== 0 && unit.cost === 0 && !uniqueMissingMap.has(unit.nm_id)) {
+          uniqueMissingMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode });
+        }
+
+        unit.net_sales = unit.sale_amount - unit.return_amount;
+        const isSold = unit.status === 'Продажа' && unit.net_sales > 0;
+        unit.isSold = isSold;
+
+        const costToDeduct = isSold ? unit.cost : 0;
+        
+        const taxBase = unit.net_sales - unit.logistics_amount - costToDeduct;
+        unit.tax = taxBase > 0 ? taxBase * 0.2 : 0;
+        unit.netProfit = unit.net_sales - unit.logistics_amount - unit.other_expenses - costToDeduct - unit.tax;
+
+        totalSales += unit.net_sales;
+        totalLog += unit.logistics_amount;
+        totalOther += unit.other_expenses;
+        totalCost += costToDeduct;
+        totalTax += unit.tax;
+
+        if (unit.nm_id !== 0) {
+          if (!nmMap.has(unit.nm_id)) {
+            nmMap.set(unit.nm_id, { nm_id: unit.nm_id, title: unit.title, vendorCode: unit.vendorCode, soldCount: 0, returnCount: 0, revenue: 0, profit: 0 });
+          }
+          const prodGroup = nmMap.get(unit.nm_id);
+          if (isSold) prodGroup.soldCount++;
+          if (unit.status.includes('Возврат') || unit.status === 'Отмена / Возврат') prodGroup.returnCount++;
+          prodGroup.revenue += unit.net_sales;
+          prodGroup.profit += unit.netProfit;
+        }
+        return unit;
+      }).sort((a, b) => b.netProfit - a.netProfit);
+
+      const productList = Array.from(nmMap.values()).sort((a, b) => b.profit - a.profit);
+      const finalTotalPayout = totalSales - totalLog - totalOther;
+
+      return {
+        missingPriceItems: Array.from(uniqueMissingMap.values()),
+        detailedData: detailedList,
+        productAnalytics: productList,
+        nmMap,
+        dashboardData: {
+          sales: totalSales, 
+          wb_payout: finalTotalPayout, 
+          profit: finalTotalPayout - totalCost - totalTax,
+          logistics: totalLog, 
+          penalties: totalOther, 
+          tax: totalTax,
+          shippedQty,
+          soldQty,
+          returnedQty,
+          topProducts: productList.slice(0, 10),
+          worstProducts: [...productList].sort((a, b) => a.profit - b.profit).slice(0, 10)
+        }
+      };
+    };
+
+    const currentData = processData(currentFilteredRaw);
+    const prevData = hasP ? processData(prevFilteredRaw) : null;
+
+    let comparisonList: any[] = [];
+    if (hasP && prevData) {
+        comparisonList = currentData.productAnalytics.map(curP => {
+            const prevP = prevData.nmMap.get(curP.nm_id) || { soldCount: 0, profit: 0 };
+            
+            const profitDiff = curP.profit - prevP.profit;
+            let profitPercent = 0;
+            if (prevP.profit !== 0) profitPercent = (profitDiff / Math.abs(prevP.profit)) * 100;
+            else if (curP.profit > 0) profitPercent = 100;
+            else if (curP.profit < 0) profitPercent = -100;
+
+            const soldDiff = curP.soldCount - prevP.soldCount;
+            let soldPercent = 0;
+            if (prevP.soldCount !== 0) soldPercent = (soldDiff / prevP.soldCount) * 100;
+            else if (curP.soldCount > 0) soldPercent = 100;
+
+            return {
+                ...curP,
+                prevProfit: prevP.profit,
+                profitDiff,
+                profitPercent,
+                prevSoldCount: prevP.soldCount,
+                soldDiff,
+                soldPercent
+            };
+        });
+
+        prevData.nmMap.forEach(prevP => {
+            if (!currentData.nmMap.has(prevP.nm_id)) {
+                comparisonList.push({
+                    nm_id: prevP.nm_id,
+                    title: prevP.title,
+                    vendorCode: prevP.vendorCode,
+                    soldCount: 0,
+                    profit: 0,
+                    prevProfit: prevP.profit,
+                    profitDiff: 0 - prevP.profit,
+                    profitPercent: prevP.profit !== 0 ? -100 : 0,
+                    prevSoldCount: prevP.soldCount,
+                    soldDiff: 0 - prevP.soldCount,
+                    soldPercent: prevP.soldCount !== 0 ? -100 : 0
+                });
+            }
+        });
+
+        comparisonList.sort((a, b) => b.profit - a.profit);
+    }
 
     return {
-      missingPriceItems: Array.from(uniqueMissingMap.values()),
-      filteredRawReports: filteredRaw,
-      detailedData: detailedList,
-      productAnalytics: productList,
+      missingPriceItems: currentData.missingPriceItems,
+      filteredRawReports: currentFilteredRaw,
+      detailedData: currentData.detailedData,
+      productAnalytics: currentData.productAnalytics,
       dashboardData: {
-        sales: totalSales, 
-        wb_payout: finalTotalPayout, 
-        profit: finalTotalPayout - totalCost - totalTax,
-        logistics: totalLog, 
-        penalties: totalOther, 
-        tax: totalTax,
-        shippedQty,
-        soldQty,
-        returnedQty,
-        topProducts: productList.slice(0, 10),
-        worstProducts: [...productList].sort((a, b) => a.profit - b.profit).slice(0, 10)
+        ...currentData.dashboardData,
+        comparisonAnalytics: comparisonList,
+        hasPeriod: hasP,
+        periodLabels: { curStartStr, curEndStr, prevStartStr, prevEndStr }
       }
     };
   }, [rawReports, savedPrices, savedProducts, globalDateStart, globalDateEnd, myWarehouse, wbLinksV2]);
@@ -615,6 +711,65 @@ export default function Reports() {
               </div>
             </div>
           </div>
+
+          {/* СРАВНЕНИЕ ТОВАРОВ ПО ПЕРИОДУ */}
+          {dashboardData.hasPeriod ? (
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mt-4 overflow-x-auto">
+              <div className="mb-4">
+                <h3 className="text-[16px] font-bold text-gray-900 mb-1">Сравнение товара по периоду</h3>
+                <p className="text-[12px] text-gray-500">
+                  <span className="font-bold">Тек. период:</span> {dashboardData.periodLabels?.curStartStr} — {dashboardData.periodLabels?.curEndStr} <span className="mx-2 text-gray-300">|</span> 
+                  <span className="font-bold">Пред. период:</span> {dashboardData.periodLabels?.prevStartStr} — {dashboardData.periodLabels?.prevEndStr}
+                </p>
+              </div>
+              <table className="w-full text-left border-collapse whitespace-nowrap">
+                <thead className="bg-gray-50 text-[11px] uppercase tracking-wider text-gray-500 font-bold border-b border-gray-200">
+                  <tr>
+                    <th className="px-4 py-3 border-r border-gray-100">Товар</th>
+                    <th className="px-4 py-3 text-right border-r border-gray-100">Продано (Тек)</th>
+                    <th className="px-4 py-3 text-right border-r border-gray-100">Продано (Пред)</th>
+                    <th className="px-4 py-3 text-right border-r border-gray-100">Динамика (шт)</th>
+                    <th className="px-4 py-3 text-right border-r border-gray-100">Прибыль (Тек)</th>
+                    <th className="px-4 py-3 text-right border-r border-gray-100">Прибыль (Пред)</th>
+                    <th className="px-4 py-3 text-right">Динамика (₽)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {dashboardData.comparisonAnalytics?.map((p: any) => {
+                    const renderTrend = (val: number, percent: number) => (
+                      <div className="flex flex-col items-end">
+                        <span className={`text-[12px] font-bold ${val > 0 ? 'text-green-600' : val < 0 ? 'text-red-600' : 'text-gray-500'}`}>
+                          {val > 0 ? '+' : ''}{val.toLocaleString('ru-RU')}
+                        </span>
+                        <span className={`text-[10px] ${percent > 0 ? 'text-green-500' : percent < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                          {percent > 0 ? '▲' : percent < 0 ? '▼' : '—'} {Math.abs(percent).toFixed(1)}%
+                        </span>
+                      </div>
+                    );
+
+                    return (
+                      <tr key={p.nm_id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 border-r border-gray-100">
+                          <p className="font-semibold text-[13px] text-[#1e3a5f] truncate max-w-[250px]" title={p.title}>{p.title}</p>
+                          <p className="text-[11px] text-gray-500 mt-0.5">Арт: {p.vendorCode}</p>
+                        </td>
+                        <td className="px-4 py-3 text-right font-medium text-[13px] border-r border-gray-100">{p.soldCount}</td>
+                        <td className="px-4 py-3 text-right text-gray-500 text-[13px] border-r border-gray-100">{p.prevSoldCount}</td>
+                        <td className="px-4 py-3 border-r border-gray-100 bg-gray-50/50">{renderTrend(p.soldDiff, p.soldPercent)}</td>
+                        <td className="px-4 py-3 text-right font-bold text-[13px] text-[#1e3a5f] border-r border-gray-100">{p.profit.toLocaleString('ru-RU')} ₽</td>
+                        <td className="px-4 py-3 text-right text-gray-500 text-[13px] border-r border-gray-100">{p.prevProfit.toLocaleString('ru-RU')} ₽</td>
+                        <td className="px-4 py-3 bg-gray-50/50">{renderTrend(p.profitDiff, p.profitPercent)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="bg-blue-50/50 p-6 rounded-xl border border-blue-100 mt-4 text-center">
+              <p className="text-[13px] text-blue-800 font-medium">Для отображения сравнения товаров по периодам, пожалуйста, выберите <b>"Период"</b> в верхнем меню (например, последние 30 дней).</p>
+            </div>
+          )}
         </div>
       )}
 
