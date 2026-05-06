@@ -47,7 +47,9 @@ const getPriceForDate = (nmId: number, targetDate: string, prices: any[]) => {
 
 export default function Reports() {
   const navigate = useNavigate();
-  const token = import.meta.env.VITE_WB_API_KEY_STATISTICS;
+  
+  // ИЗМЕНЕНИЕ ЗДЕСЬ: Подключаем новый токен Финансов
+  const token = import.meta.env.VITE_WB_API_KEY_FINANCE;
   
   const [activeTab, setActiveTab] = useState<1 | 2 | 3 | 4>(1);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -88,7 +90,8 @@ export default function Reports() {
   const wbLinksV2 = useLiveQuery(() => (db as any).wbLinksV2?.toArray()) || [];
 
   const loadNewReports = async () => {
-    if (!token) return alert('API Токен (Статистика) не найден!');
+    // ИЗМЕНЕНИЕ ЗДЕСЬ: Обновлен текст ошибки
+    if (!token) return alert('API Токен (Финансы) не найден в файле .env!');
     setIsLoading(true);
     try {
       const lastReport = await db.rawReports.orderBy('rr_dt').last();
@@ -102,7 +105,8 @@ export default function Reports() {
   };
 
   const loadManualReports = async () => {
-    if (!token) return alert('API Токен (Статистика) не найден!');
+    // ИЗМЕНЕНИЕ ЗДЕСЬ: Обновлен текст ошибки
+    if (!token) return alert('API Токен (Финансы) не найден в файле .env!');
     setIsLoading(true);
     try {
       const newRows = await fetchFinancialReport(token, `${fetchDateFrom}T00:00:00Z`, `${fetchDateTo}T23:59:59Z`);
@@ -180,9 +184,6 @@ export default function Reports() {
     }, 100); 
   };
 
-  // ==========================================
-  // АЛГОРИТМ РАСЧЕТА С ХРОНОЛОГИЕЙ И FIFO
-  // ==========================================
   const { detailedData, productAnalytics, dashboardData, filteredRawReports, missingPriceItems } = useMemo(() => {
     
     const nmReceiptsMap = new Map();
@@ -241,7 +242,6 @@ export default function Reports() {
       shkCostMap.set(`rrd_${sale.rrd_id}`, unitCost);
     });
 
-    // Расчет дат для текущего и предыдущего периодов
     let hasP = false;
     let curStartStr = '', curEndStr = '', prevStartStr = '', prevEndStr = '';
     
@@ -281,7 +281,6 @@ export default function Reports() {
       return rowDate >= prevStartStr && rowDate <= prevEndStr;
     }) : [];
 
-    // Универсальная функция обработки массива отчетов
     const processData = (rawData: any[]) => {
       let totalSales = 0, totalLog = 0, totalOther = 0, totalCost = 0, totalTax = 0;
       let shippedQty = 0, soldQty = 0, returnedQty = 0;
@@ -947,7 +946,7 @@ export default function Reports() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {productAnalytics.length === 0 ? (
-                  <tr><td colSpan={5}><EmptyState icon={Layers} title="Нет данных" description="Для выбранного периода нет аналитики по товарам" /></td></tr>
+                  <tr><td colSpan={5}><EmptyState icon={Layers} title="Нет данных" description="Для выбранного периода нет аналитики по товаров" /></td></tr>
                 ) : productAnalytics.map((p: any) => (
                   <tr key={p.nm_id} className="hover:bg-gray-50/80 transition-colors bg-white">
                     <td className="px-6 py-3">
