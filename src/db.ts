@@ -81,6 +81,24 @@ export interface AppState {
   id: string;
   value: any;
 }
+
+// ==========================================
+// НОВОЕ: ИНТЕРФЕЙСЫ ДЛЯ КОГОРТНОГО АНАЛИЗА (ШК)
+// ==========================================
+export interface ShkCohort {
+  shk: string;               // Уникальный ШК (номер заказа)
+  article: string;           // Артикул товара
+  initial_order_date: string;// Первоначальная дата заказа
+}
+
+export interface ShkOperation {
+  id?: number;
+  shk: string;               // Привязка к уникальному ШК
+  operation_date: string;    // Дата самой операции (возврат, логистика и т.д.)
+  type: string;              // Тип: 'sale', 'return', 'logistics' и т.д.
+  amount: number;            // Сумма (продажа)
+  logistics_cost: number;    // Затраты на логистику
+}
 // ==========================================
 
 export class WbAnalyticsDB extends Dexie {
@@ -107,6 +125,10 @@ export class WbAnalyticsDB extends Dexie {
 
   // НОВОЕ: Таблица состояния приложения
   appState!: Table<AppState>;
+
+  // НОВОЕ: Таблицы для когортного анализа ШК
+  shkCohorts!: Table<ShkCohort, string>;
+  shkOperations!: Table<ShkOperation, number>;
 
   constructor() {
     super('WbAnalyticsDB');
@@ -157,6 +179,12 @@ export class WbAnalyticsDB extends Dexie {
     // ДОБАВЛЕНО: Версия 15: Таблица для сохранения состояния интерфейса (чтобы не сбрасывалось при закрытии)
     this.version(15).stores({
       appState: 'id'
+    });
+
+    // ДОБАВЛЕНО: Версия 16: Таблицы для когортного анализа отчетов ВБ по ШК
+    this.version(16).stores({
+      shkCohorts: 'shk, article, initial_order_date',
+      shkOperations: '++id, shk, operation_date, type'
     });
   }
 }
