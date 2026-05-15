@@ -38,7 +38,7 @@ export const fetchWbProducts = async (token: string) => {
     body: JSON.stringify({ settings: { cursor: { limit: 100 }, filter: { withPhoto: -1 } } })
   });
 
-  if (!response.ok) throw new Error('Не удалось скачать товары. Проверьте API Токен!');
+  if (!response.ok) throw new Error('Не удалось скачать товары. Либо неверный токен, либо Wildberries временно заблокировал запрос (лимит 1 раз в час).');
   const data = await response.json();
   
   return data.cards.map((card: any) => ({
@@ -61,10 +61,9 @@ export const fetchFinancialReport = async (token: string, dateFrom: string, date
       body: JSON.stringify({ dateFrom, dateTo, rrdId, limit: 100000 })
     });
 
+    // Изменение здесь: мы отменяем ожидание и просто выдаем ошибку, так как ждать час бессмысленно
     if (response.status === 429) {
-      console.warn("WB просит подождать. Лимит запросов. Спим 60 секунд...");
-      await sleep(60000); 
-      continue; 
+      throw new Error("Wildberries временно заблокировал скачивание из-за лимита (Ошибка 429). Пожалуйста, подождите некоторое время и попробуйте снова.");
     }
     if (response.status === 204) break; 
     if (!response.ok) throw new Error(`Ошибка скачивания отчета. Статус: ${response.status}`);
@@ -88,7 +87,6 @@ export const fetchFinancialReport = async (token: string, dateFrom: string, date
         
         stringFields.forEach(field => {
           if (typeof parsedItem[field] === 'string') {
-            // На случай если ВБ вдруг пришлет запятые вместо точек
             parsedItem[field] = parseFloat(parsedItem[field].replace(',', '.')) || 0; 
           }
         });
@@ -128,9 +126,7 @@ export const fetchWbWarehouseStocks = async (token: string) => {
     });
 
     if (response.status === 429) {
-      console.warn("WB Лимит на остатки. Спим 20 секунд...");
-      await sleep(20000); 
-      continue;
+      throw new Error("Wildberries временно заблокировал доступ к остаткам из-за лимитов (Ошибка 429). Попробуйте позже.");
     }
     if (!response.ok) throw new Error(`Ошибка скачивания остатков. Статус: ${response.status}`);
 
