@@ -61,11 +61,18 @@ export const fetchFinancialReport = async (token: string, dateFrom: string, date
       body: JSON.stringify({ dateFrom, dateTo, rrdId, limit: 100000 })
     });
 
-    // Изменение здесь: мы отменяем ожидание и просто выдаем ошибку, так как ждать час бессмысленно
+    // Умная обработка 429 ошибки без прерывания цикла
     if (response.status === 429) {
-      throw new Error("Wildberries временно заблокировал скачивание из-за лимита (Ошибка 429). Пожалуйста, подождите некоторое время и попробуйте снова.");
+      console.warn("WB лимит запросов (429). Ждем 61 секунду перед повторной попыткой...");
+      await sleep(61000); 
+      continue; 
     }
-    if (response.status === 204) break; 
+
+    // Если данные за период закончились
+    if (response.status === 204) {
+      break; 
+    }
+
     if (!response.ok) throw new Error(`Ошибка скачивания отчета. Статус: ${response.status}`);
 
     const data = await response.json();
@@ -104,7 +111,16 @@ export const fetchFinancialReport = async (token: string, dateFrom: string, date
 
       allData = [...allData, ...parsedData];
       rrdId = data[data.length - 1].rrdId; 
-      if (data.length === 100000) await sleep(5000); 
+      
+      // Если пришел максимум строк (100 000), значит есть следующая страница. 
+      // Ждем 61 секунду (лимит WB: 1 запрос в минуту)
+      if (data.length === 100000) {
+        console.log(`Скачано ${allData.length} строк. Пауза 61 сек для обхода лимита WB...`);
+        await sleep(61000); 
+      } else {
+        // Если строк меньше лимита, это последняя "страница"
+        hasMore = false;
+      }
     }
   }
   return allData;
